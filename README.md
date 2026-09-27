@@ -80,14 +80,17 @@ headers (`export/fonts.h`, `export/palette.h`) so the firmware draws from one so
 
 | File | What |
 |---|---|
-| `render.py` | 52×16 panel, Spleen text engine, trend/graph primitives, PNG encoder. No dependencies. |
+| `model.py` | What a reading is: thresholds, stale rule, trend vocabulary, delta rule, `Sample` and `Reading`. The firmware ports this first. |
+| `render.py` | 52×16 panel, Spleen text engine, PNG encoder, review renders. No dependencies. |
 | `fonts.py` | Glyphs baked from Spleen BDFs by `make_fonts.py`. Generated — do not hand-edit. |
-| `faces.py` | The faces, drawn native for 52×16. |
+| `faces.py` | The faces, drawn native for 52×16, and the face registry + demo states every tool uses. |
 | `sources.py` | Dexcom Share and Nightscout, ported from `BGSource*`. |
-| `daemon.py` | Poll → render → push, with app re-creation and honest failure faces. |
+| `device.py` | The TC002's HTTP protocol, once: push, delete, exists, switch, config. |
+| `config.py` | Resolution order for settings and credentials; `PIXBAR_*` env wins. |
+| `daemon.py` | Poll → render → push, with app re-creation, re-selection and honest failure faces. |
 | `emu.py` | Browser emulator; renders through the same Python and can push to the device. |
 | `audit.py` | Gate: clipped pixels, edge margins, empty frames, night-brightness legibility. |
-| `push.py` | One frame to the device. |
+| `push.py` | One frame to the device, from the command line. |
 | `make_golden.py` | The golden frame corpus and its self-testing check. |
 | `export_fonts.py` | Fonts, arrows, palette and thresholds as C headers for the firmware. |
 

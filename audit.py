@@ -21,49 +21,40 @@ import render as R
 NIGHT = 60          # the dim level a night-time panel realistically runs at
 FLOOR = 12          # worst case
 MIN_LIT = 12        # fewer lit pixels than this is a face saying nothing
-FULL_BLEED = {"big-graph", "hero-graph"}
-
-
-def lit(panel):
-    return sum(1 for row in panel.px for c in row if any(c))
-
-
-def visible_at(panel, level):
-    return sum(1 for row in panel.dimmed(level).px for c in row if any(c))
+MUST_SURVIVE_FLOOR = ("urgent-low", "urgent-high", "stale")
 
 
 def main():
     problems = []
-    for slug, name, fn, _ in F.FACES:
-        for state, reading in F.STATES:
-            panel = fn(reading)
-            where = f"{slug}/{state}"
+    seen = 0
+    for face, state, _reading, panel in F.every_frame():
+        seen += 1
+        where = f"{face.slug}/{state}"
 
-            if panel.clipped:
-                problems.append(("clipped", where, f"{panel.clipped} lit pixels off-panel"))
+        if panel.clipped:
+            problems.append(("clipped", where, f"{panel.clipped} lit pixels off-panel"))
 
-            if slug not in FULL_BLEED:
-                cols = [c for c in (0, panel.w - 1)
-                        if any(any(panel.px[y][c]) for y in range(panel.h))]
-                if cols:
-                    problems.append(("edge", where, f"ink in column(s) {cols}"))
+        if not face.full_bleed:
+            cols = [c for c in (0, panel.w - 1)
+                    if any(any(panel.px[y][c]) for y in range(panel.h))]
+            if cols:
+                problems.append(("edge", where, f"ink in column(s) {cols}"))
 
-            n = lit(panel)
-            if n < MIN_LIT:
-                problems.append(("empty", where, f"only {n} lit pixels"))
+        n = R.lit_pixels(panel)
+        if n < MIN_LIT:
+            problems.append(("empty", where, f"only {n} lit pixels"))
 
-            night, floor = visible_at(panel, NIGHT), visible_at(panel, FLOOR)
-            if n and night < n * 0.5:
-                problems.append(("contrast", where,
-                                 f"{n - night} of {n} pixels vanish at night level {NIGHT}"))
-            # The state itself must survive the floor, whatever the decoration does.
-            if state in ("urgent-low", "urgent-high", "stale") and floor == 0:
-                problems.append(("contrast", where, f"nothing visible at floor level {FLOOR}"))
+        night = R.lit_pixels(panel.dimmed(NIGHT))
+        if n and night < n * 0.5:
+            problems.append(("contrast", where,
+                             f"{n - night} of {n} pixels vanish at night level {NIGHT}"))
+        # The state itself must survive the floor, whatever the decoration does.
+        if state in MUST_SURVIVE_FLOOR and R.lit_pixels(panel.dimmed(FLOOR)) == 0:
+            problems.append(("contrast", where, f"nothing visible at floor level {FLOOR}"))
 
     for kind, where, detail in problems:
         print(f"{kind:<9} {where:<22} {detail}")
-    faces_x_states = len(F.FACES) * len(F.STATES)
-    print(f"\n{len(problems)} problem(s) across {faces_x_states} face/state combinations")
+    print(f"\n{len(problems)} problem(s) across {seen} face/state combinations")
     return 1 if problems else 0
 
 

@@ -10,6 +10,7 @@ RGB888, so a mockup is comparable with what the TC001 actually lights up.
 """
 
 import base64
+import functools as _functools
 import struct
 import zlib
 
@@ -65,12 +66,6 @@ class Panel:
             for dx in range(w):
                 self.set(x + dx, y + dy, color)
 
-    def hline(self, x, y, w, color):
-        self.rect(x, y, w, 1, color)
-
-    def vline(self, x, y, h, color):
-        self.rect(x, y, 1, h, color)
-
     def blit(self, x, y, rows, color, dark=None):
         """rows is a list of '0'/'1' strings; 1 paints color, 0 paints dark if given."""
         for dy, row in enumerate(rows):
@@ -87,8 +82,19 @@ class Panel:
         return p
 
 
+def lit_pixels(panel):
+    """How many pixels are on at all - the number every gate is built from."""
+    return sum(1 for row in panel.px for c in row if any(c))
+
+
+def raw_rgb(panel):
+    """The frame as RGB888 bytes, row-major from the top-left: the format the
+    golden manifest hashes and a firmware renderer is compared against."""
+    return b"".join(bytes(px) for row in panel.px for px in row)
+
+
 # --------------------------------------------------------------- 3x5 pixel font
-APOSTROPHE = ("1", "1", "0", "0", "0")
+# The fallback for the one place no Spleen glyph fits (a 6-row trend box).
 _T = {
     "0": ("111", "101", "101", "101", "111"),
     "1": ("010", "110", "010", "010", "111"),
@@ -134,15 +140,10 @@ _T = {
     ".": ("0", "0", "0", "0", "1"),
     ",": ("0", "0", "0", "1", "1"),
     ":": ("0", "1", "0", "1", "0"),
-    "'": APOSTROPHE,
+    "'": ("1", "1", "0", "0", "0"),
     " ": ("00", "00", "00", "00", "00"),
 }
 TINY_H = 5
-
-
-def tiny_width(text):
-    cols = [len(_T[c][0]) + 1 for c in text.upper() if c in _T]
-    return sum(cols) - 1 if cols else 0
 
 
 def tiny(panel, x, y, text, color):
@@ -156,161 +157,100 @@ def tiny(panel, x, y, text, color):
     return x - 1
 
 
-def tiny_right(panel, x_right, y, text, color):
-    tiny(panel, x_right - tiny_width(text) + 1, y, text, color)
-
-
-
 # ------------------------------------------------- real pixel fonts (Spleen)
-# Baked by make_fonts.py from Spleen BDFs (BSD-2, (c) Frederic Cambus). Used in
-# preference to the seven-segment digits below: the vendor's own reference
-# renderer makes the point that proper letterforms with a 1 px inter-character
-# gap are what stops a pixel panel looking cheap, and it is right.
+# Baked by make_fonts.py from Spleen BDFs (BSD-2, (c) Frederic Cambus). Chosen
+# over hand-rolled seven-segment digits, which read as a calculator: the vendor's
+# own reference renderer makes the point that proper letterforms with a 1 px
+# inter-character gap are what stops a pixel panel looking cheap, and it is right.
 import fonts as _F  # noqa: E402
 
 HERO = (_F.SPLEEN_12X24, _F.SPLEEN_12X24_W, _F.SPLEEN_12X24_H)   # digits 12x15
 MID = (_F.SPLEEN_8X16, _F.SPLEEN_8X16_W, _F.SPLEEN_8X16_H)       # caps 8x10
 SMALL = (_F.SPLEEN_6X12, _F.SPLEEN_6X12_W, _F.SPLEEN_6X12_H)     # caps 6x7
 
+# Layout rules, shared with the firmware through export_fonts.py: glyphs are
+# trimmed to their ink and separated by TRACKING px; a blank glyph advances SPACE.
+TRACKING = 1
+SPACE = 3
 
-def _ink_cols(rows):
+
+@_functools.lru_cache(maxsize=None)
+def ink_box(rows):
+    """(first_col, last_col, first_row, last_row) of a glyph's ink. A blank glyph
+    is (0, -1, 0, -1), so `last < first` is the test for "nothing to draw".
+    Cached: the tables are constant and every frame asks the same questions."""
     cols = [c for c in range(len(rows[0])) if any(r[c] == "1" for r in rows)]
-    return (cols[0], cols[-1]) if cols else (0, -1)
+    inked = [i for i, r in enumerate(rows) if "1" in r]
+    if not cols:
+        return (0, -1, 0, -1)
+    return (cols[0], cols[-1], inked[0], inked[-1])
 
 
-def _ink_top(font, text=None):
-    """First inked row. Across the whole font by default (so separate strings
-    share a baseline); across just `text` when a layout wants the drawn string
-    to sit exactly at the y it asked for - digits would otherwise be pushed
-    down by whichever glyph in the font reaches highest."""
+def _glyphs(font, text):
     table = font[0]
-    glyphs = ([table[c] for c in text.upper() if c in table] if text else list(table.values()))
-    tops = [i for g in glyphs for i, r in enumerate(g) if "1" in r]
-    return min(tops) if tops else 0
+    return [table[c] for c in text.upper() if c in table]
+
+
+def _ink_rows(font, text):
+    """(first, last) inked row across the glyphs of `text`, or None."""
+    boxes = [ink_box(g) for g in _glyphs(font, text)]
+    boxes = [b for b in boxes if b[1] >= b[0]]
+    if not boxes:
+        return None
+    return min(b[2] for b in boxes), max(b[3] for b in boxes)
+
+
+def _ink_top(font, text):
+    """First inked row of `text` - so the drawn string sits exactly at the y it
+    asked for, instead of being pushed down by whichever glyph in the font
+    reaches highest."""
+    rows = _ink_rows(font, text)
+    return rows[0] if rows else 0
 
 
 def glyph_boxes(font, text):
     """[(rows, first_col, last_col)] for each drawable character."""
-    table = font[0]
-    out = []
-    for ch in text.upper():
-        g = table.get(ch)
-        if g is None:
-            continue
-        out.append((g,) + _ink_cols(g))
-    return out
+    return [(g,) + ink_box(g)[:2] for g in _glyphs(font, text)]
 
 
-def font_width(font, text, tracking=1, space=3):
+def font_width(font, text):
     total = 0
     for rows, c0, c1 in glyph_boxes(font, text):
-        total += (space if c1 < c0 else c1 - c0 + 1) + tracking
-    return max(0, total - tracking)
+        total += (SPACE if c1 < c0 else c1 - c0 + 1) + TRACKING
+    return max(0, total - TRACKING)
 
 
-def font_height(font, text=None):
-    """Ink height of `text` (or of the whole font when text is None)."""
-    table = font[0]
-    glyphs = ([table[c] for c in text.upper() if c in table] if text else list(table.values()))
-    rows = [i for g in glyphs for i, r in enumerate(g) if "1" in r]
-    return (max(rows) - min(rows) + 1) if rows else 0
+def font_height(font, text):
+    """Ink height of `text` in `font`."""
+    rows = _ink_rows(font, text)
+    return (rows[1] - rows[0] + 1) if rows else 0
 
 
-def font_text(panel, x, y, text, font, color, tracking=1, space=3, fit=True):
+def font_text(panel, x, y, text, font, color):
     """Draw text with its ink box starting at (x, y). Glyphs are trimmed to their
-    own ink and separated by `tracking` px, so spacing is even and strokes never
-    touch - Spleen's built-in side bearings would otherwise double up. fit=False
-    keeps the font-wide baseline instead, for text that must line up with other
-    text drawn separately."""
-    top = _ink_top(font, text if fit else None)
+    own ink and separated by TRACKING px, so spacing is even and strokes never
+    touch - Spleen's built-in side bearings would otherwise double up."""
+    top = _ink_top(font, text)
     for rows, c0, c1 in glyph_boxes(font, text):
         if c1 < c0:
-            x += space + tracking
+            x += SPACE + TRACKING
             continue
         for dy, row in enumerate(rows[top:]):
             for dx in range(c0, c1 + 1):
                 if row[dx] == "1":
                     panel.set(x + dx - c0, y + dy, color)
-        x += (c1 - c0 + 1) + tracking
-    return x - tracking
+        x += (c1 - c0 + 1) + TRACKING
+    return x - TRACKING
 
 
-def font_text_right(panel, x_right, y, text, font, color, tracking=1, space=3):
-    font_text(panel, x_right - font_width(font, text, tracking, space) + 1, y, text,
-              font, color, tracking, space)
-
-
-def font_text_bottom(panel, x, y_bottom, text, font, color, tracking=1, space=3):
-    """Draw so the LAST inked row lands on y_bottom."""
-    h = font_height(font, text)
-    return font_text(panel, x, y_bottom - h + 1, text, font, color, tracking, space)
-
-
-def font_text_center(panel, y, text, font, color, tracking=1, space=3, x=0, w=W):
-    width = font_width(font, text, tracking, space)
-    font_text(panel, x + (w - width) // 2, y, text, font, color, tracking, space)
-
-
-# ------------------------------------------- seven-segment digits (scalable)
-# Segments a top, b top-right, c bottom-right, d bottom, e bottom-left,
-# f top-left, g middle. One function covers the hero value and the mid value.
-_SEG = {
-    "0": "abcdef",
-    "1": "bc",
-    "2": "abdeg",
-    "3": "abcdg",
-    "4": "bcfg",
-    "5": "acdfg",
-    "6": "acdefg",
-    "7": "abc",
-    "8": "abcdefg",
-    "9": "abcdfg",
-    "-": "g",
-}
-
-
-def seg_digit(panel, x, y, ch, w, h, color, thick=2):
-    segs = _SEG.get(ch)
-    if segs is None:
-        return
-    mid = y + (h - thick) // 2
-    bot = y + h - thick
-    right = x + w - thick
-    if "a" in segs:
-        panel.rect(x, y, w, thick, color)
-    if "g" in segs:
-        panel.rect(x, mid, w, thick, color)
-    if "d" in segs:
-        panel.rect(x, bot, w, thick, color)
-    if "f" in segs:
-        panel.rect(x, y, thick, mid - y + thick, color)
-    if "b" in segs:
-        panel.rect(right, y, thick, mid - y + thick, color)
-    if "e" in segs:
-        panel.rect(x, mid, thick, bot - mid + thick, color)
-    if "c" in segs:
-        panel.rect(right, mid, thick, bot - mid + thick, color)
-
-
-def seg_text(panel, x, y, text, w, h, color, thick=2, gap=2):
-    for ch in text:
-        if ch == ":":
-            panel.rect(x, y + h // 3, thick, thick, color)
-            panel.rect(x, y + 2 * h // 3, thick, thick, color)
-            x += thick + gap
-            continue
-        seg_digit(panel, x, y, ch, w, h, color, thick)
-        x += w + gap
-    return x - gap
-
-
-def seg_width(text, w, thick=2, gap=2):
-    total = sum((thick if ch == ":" else w) + gap for ch in text)
-    return total - gap if total else 0
+def font_text_right(panel, x_right, y, text, font, color):
+    font_text(panel, x_right - font_width(font, text) + 1, y, text, font, color)
 
 
 # ------------------------------------------------------------- trend arrows
-# 7x7, one per BG_TREND in src/enums.h.
+# 7x7 and 5x5 bitmaps, one per BG_TREND in src/enums.h. No face draws these -
+# faces.trend_mark draws chevrons that scale with their box - but they are part
+# of the firmware header contract (export_fonts.py), so they stay as data.
 ARROWS = {
     "DOUBLE_UP": ("0001000", "0011100", "0111110", "0001000", "0011100", "0111110", "0001000"),
     "SINGLE_UP": ("0001000", "0011100", "0111110", "0011100", "0001000", "0001000", "0001000"),
@@ -337,18 +277,6 @@ ARROWS5 = {
 ARROW5_W = 5
 
 
-def arrow5(panel, x, y, trend, color):
-    g = ARROWS5.get(trend)
-    if g:
-        panel.blit(x, y, g, color)
-
-
-def arrow(panel, x, y, trend, color):
-    g = ARROWS.get(trend)
-    if g:
-        panel.blit(x, y, g, color)
-
-
 # ------------------------------------------------------------- PNG encoding
 def _chunk(tag, data):
     body = tag + data
@@ -356,7 +284,11 @@ def _chunk(tag, data):
 
 
 def png_bytes(rows, w, h):
-    raw = b"".join(b"\x00" + bytes(v for px in row for v in px) for row in rows)
+    # A review render has a few dozen distinct colours over ~250k pixels, so
+    # encode each colour once rather than unpacking every tuple.
+    enc = {}
+    raw = b"".join(b"\x00" + b"".join(enc.get(px) or enc.setdefault(px, bytes(px)) for px in row)
+                   for row in rows)
     return (
         b"\x89PNG\r\n\x1a\n"
         + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
@@ -370,27 +302,42 @@ def png_raw(panel):
     return png_bytes(panel.px, panel.w, panel.h)
 
 
+@_functools.lru_cache(maxsize=None)
+def _led_stamp(scale, radius, glow):
+    """The dot geometry is the same for every one of the 832 cells: which
+    in-cell offsets are inside the dot, and which are in the glow with what
+    weight. Computed once per (scale, radius, glow) instead of per cell."""
+    r = radius * scale
+    inside, halo = [], []
+    for ly in range(scale):
+        for lx in range(scale):
+            d = ((lx + 0.5 - scale / 2) ** 2 + (ly + 0.5 - scale / 2) ** 2) ** 0.5
+            if d <= r:
+                inside.append((lx, ly))
+            elif glow and d <= r * 2.0:
+                halo.append((lx, ly, max(0.0, 1.0 - (d - r) / r) * 0.35))
+    return inside, halo
+
+
 def leds_rows(panel, scale=14, bg=(6, 6, 6), off=(22, 22, 22), radius=0.36, glow=True):
     """Review render as a pixel-row array: round LED dots on a dark board, so a
     mockup can be judged the way the panel is judged - including whether a dim
     colour disappears. Returns (rows, w, h) for composing several panels."""
     w, h = panel.w * scale, panel.h * scale
     rows = [[bg] * w for _ in range(h)]
-    r = radius * scale
+    inside, halo = _led_stamp(scale, radius, glow)
     for cy in range(panel.h):
+        oy = cy * scale
         for cx in range(panel.w):
+            ox = cx * scale
             color = panel.px[cy][cx]
             lit = any(color)
             base = color if lit else off
-            ox, oy = cx * scale + scale / 2, cy * scale + scale / 2
-            for py in range(cy * scale, (cy + 1) * scale):
-                for px in range(cx * scale, (cx + 1) * scale):
-                    d = ((px + 0.5 - ox) ** 2 + (py + 0.5 - oy) ** 2) ** 0.5
-                    if d <= r:
-                        rows[py][px] = base
-                    elif glow and lit and d <= r * 2.0:
-                        f = max(0.0, 1.0 - (d - r) / r) * 0.35
-                        rows[py][px] = tuple(min(255, int(bg[i] + base[i] * f)) for i in range(3))
+            for lx, ly in inside:
+                rows[oy + ly][ox + lx] = base
+            if lit:
+                for lx, ly, f in halo:
+                    rows[oy + ly][ox + lx] = tuple(min(255, int(bg[i] + base[i] * f)) for i in range(3))
     return rows, w, h
 
 

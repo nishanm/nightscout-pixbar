@@ -19,51 +19,56 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import config as C
 import faces as F
-import push
+import model as M
 import render as R
+from device import Device
 
 PORT = 8431
 _mtimes = {}
+_cfg = C.load()
+DEV = Device(_cfg["host"], _cfg["app"])
 
 
 def reload_if_changed():
     """Pick up edits to the face code without restarting the server."""
     changed = False
-    for mod in (R, F):
+    for mod in (M, R, F):
         path = mod.__file__
         stamp = os.path.getmtime(path)
         if _mtimes.get(path) != stamp:
             _mtimes[path] = stamp
             changed = True
     if changed:
+        importlib.reload(M)
         importlib.reload(R)
         importlib.reload(F)
-        importlib.reload(push)
     return changed
 
 
 def reading_from(q):
-    """Build a Reading from query params, falling back to the named state."""
-    state = q.get("state", ["in-range"])[0]
-    base = dict(F.STATES).get(state, F.STATES[0][1])
+    """Build a Reading from query params, falling back to the named state. An
+    empty delta means "unknown" - the state the faces draw as `?`."""
+    states = dict(F.demo_states())
+    base = states.get(q.get("state", ["in-range"])[0], states["in-range"])
     sgv = int(q.get("sgv", [base.sgv])[0])
+    delta = q.get("delta", [base.delta])[0]
     return F.Reading(
         sgv=sgv,
         trend=q.get("trend", [base.trend])[0],
-        delta=int(q.get("delta", [base.delta])[0]),
+        delta=None if delta in (None, "", "?") else int(delta),
         minutes_ago=int(q.get("mins", [base.minutes_ago])[0]),
         time=q.get("time", [base.time])[0],
         # keep the demo timeline, retarget its newest point at the slider value
         history=(base.history[:-1] + [(base.history[-1][0], sgv)]) if base.history else [],
+        now=base.now,
     )
 
 
 def panel_for(q):
-    default_slug, _, default_fn, _ = F.FACES[0]
-    slug = q.get("face", [default_slug])[0]
-    fn = dict((s, f) for s, _, f, _ in F.FACES).get(slug, default_fn)
-    panel = fn(reading_from(q))
+    face = F.face(q.get("face", [F.SLUGS[0]])[0]) or F.FACES[0]
+    panel = face.fn(reading_from(q))
     bri = int(q.get("bri", [255])[0])
     return panel if bri >= 255 else panel.dimmed(bri)
 
@@ -206,14 +211,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, "text/html; charset=utf-8", PAGE.encode("utf-8"))
             elif url.path == "/meta":
                 meta = {
-                    "faces": [{"slug": s, "name": n, "about": a} for s, n, _, a in F.FACES],
-                    "states": [s for s, _ in F.STATES],
-                    "trends": list(R.ARROWS.keys()),
-                    "host": push.DEFAULT_HOST,
+                    "faces": [{"slug": f.slug, "name": f.name, "about": f.about} for f in F.FACES],
+                    "states": F.STATE_NAMES,
+                    "trends": list(M.TRENDS),
+                    "host": DEV.host,
                 }
                 self._send(200, "application/json", json.dumps(meta).encode())
             elif url.path == "/state":
-                r = dict(F.STATES)[q.get("name", ["in-range"])[0]]
+                r = F.state(q.get("name", ["in-range"])[0])
                 self._send(200, "application/json", json.dumps({
                     "sgv": r.sgv, "trend": r.trend, "delta": r.delta,
                     "minutes_ago": r.minutes_ago, "time": r.time}).encode())
@@ -234,15 +239,15 @@ class Handler(BaseHTTPRequestHandler):
             reload_if_changed()
             if url.path != "/push":
                 return self._send(404, "text/plain", b"no")
-            ms, size, body = push.send_panel(push.DEFAULT_HOST, push.DEFAULT_APP, panel_for(q))
+            ms, size, reply = DEV.send_panel(panel_for(q))
             self._send(200, "application/json", json.dumps({
-                "ok": True, "ms": round(ms), "bytes": size, "host": push.DEFAULT_HOST,
-                "device": body.strip()}).encode())
+                "ok": True, "ms": round(ms), "bytes": size, "host": DEV.host,
+                "device": reply}).encode())
         except Exception as exc:
             self._send(200, "application/json", json.dumps({"ok": False, "error": str(exc)}).encode())
 
 
 if __name__ == "__main__":
     reload_if_changed()
-    print(f"TC002 face emulator on http://localhost:{PORT}/  (device {push.DEFAULT_HOST})")
+    print(f"TC002 face emulator on http://localhost:{PORT}/  (device {DEV})")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

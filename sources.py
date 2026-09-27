@@ -14,10 +14,16 @@ import hashlib
 import json
 import re
 import ssl
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from model import Sample
+
+# One CA store, loaded once: create_default_context() parses the system
+# certificates every time it is called (~11 ms), and nothing about them changes
+# between polls.
+_SSL = ssl.create_default_context()
 
 # src/BGSourceDexcom.h:6-14
 DEXCOM_APPLICATION_ID = "d89443d2-327c-4a6f-89e5-496bbb0317db"
@@ -34,8 +40,9 @@ READINGS_PATH = "/ShareWebServices/Services/Publisher/ReadPublisherLatestGlucose
 # src/BGSource.h:15 - how much history to ask for, and what the faces graph.
 BACKFILL_SECONDS = 3 * 60 * 60
 
-# src/BGSource.cpp:103-128. Values are the names our faces and the firmware share.
-TRENDS = {
+# src/BGSource.cpp:103-128: how the wire spells each model.TRENDS name. Dexcom
+# and Nightscout agree on most; "nonecomputable" is Nightscout's own.
+TREND_SPELLINGS = {
     "doubleup": "DOUBLE_UP",
     "singleup": "SINGLE_UP",
     "fortyfiveup": "FORTY_FIVE_UP",
@@ -44,11 +51,10 @@ TRENDS = {
     "singledown": "SINGLE_DOWN",
     "doubledown": "DOUBLE_DOWN",
     "not_computable": "NONE",
+    "nonecomputable": "NONE",
     "rate_out_of_range": "NONE",
     "none": "NONE",
 }
-# Nightscout sends the same set with different spelling.
-TRENDS.update({"doubleup": "DOUBLE_UP", "fortyfiveup": "FORTY_FIVE_UP", "nonecomputable": "NONE"})
 
 
 class SourceError(Exception):
@@ -61,18 +67,6 @@ class SourceError(Exception):
         self.fatal = fatal  # credentials are wrong: retrying will not help
 
 
-class Reading:
-    __slots__ = ("epoch", "sgv", "trend")
-
-    def __init__(self, epoch, sgv, trend):
-        self.epoch = int(epoch)
-        self.sgv = int(sgv)
-        self.trend = trend
-
-    def __repr__(self):
-        return f"Reading({self.sgv}, {self.trend}, {int(time.time()) - self.epoch}s ago)"
-
-
 def parse_trend(value):
     if value is None:
         return "NONE"
@@ -81,7 +75,14 @@ def parse_trend(value):
                  "FORTY_FIVE_DOWN", "SINGLE_DOWN", "DOUBLE_DOWN", "NONE", "NONE"]
         idx = int(value)
         return order[idx] if 0 <= idx < len(order) else "NONE"
-    return TRENDS.get(str(value).strip().lower().replace(" ", ""), "NONE")
+    return TREND_SPELLINGS.get(str(value).strip().lower().replace(" ", ""), "NONE")
+
+
+def _window():
+    """(minutes, max_count): the 3-hour backfill, +2 readings for safety as the
+    firmware does. Both sources ask for the same window."""
+    minutes = BACKFILL_SECONDS // 60
+    return minutes, minutes // 5 + 2
 
 
 def _post_json(url, payload, timeout=15):
@@ -93,7 +94,7 @@ def _post_json(url, payload, timeout=15):
         # to be the Dexcom app.
         "User-Agent": "nightscout-pixbar",
     })
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:
         return json.loads(r.read().decode() or "null")
 
 
@@ -126,9 +127,8 @@ class DexcomShare:
                 "applicationId": self.app_id,
             })
 
-    def fetch(self, minutes=None, max_count=None, _retry=True):
-        minutes = minutes or BACKFILL_SECONDS // 60
-        max_count = max_count or (minutes // 5 + 2)  # +2 for safety, as the firmware does
+    def fetch(self, _retry=True):
+        minutes, max_count = _window()
         try:
             self._login()
             url = (f"{self.base}{READINGS_PATH}?sessionId={self.session_id}"
@@ -140,7 +140,7 @@ class DexcomShare:
                 raise SourceError("Dexcom rejected the credentials", "BAD LOGIN", fatal=True)
             if "Session" in detail and _retry:
                 self.session_id = None
-                return self.fetch(minutes, max_count, _retry=False)
+                return self.fetch(_retry=False)
             raise SourceError(f"Dexcom HTTP {exc.code}", "HTTP")
         except (urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
             raise SourceError(f"Dexcom unreachable: {exc}", "NO NET")
@@ -154,9 +154,9 @@ class DexcomShare:
             match = re.search(r"(\d{10,13})", str(item.get("ST", "")))
             if not match:
                 continue
-            readings.append(Reading(int(match.group(1)) // 1000,
-                                    item.get("Value", 0),
-                                    parse_trend(item.get("Trend"))))
+            readings.append(Sample(int(match.group(1)) // 1000,
+                                   item.get("Value", 0),
+                                   parse_trend(item.get("Trend"))))
         readings.sort(key=lambda r: r.epoch)
         return readings
 
@@ -178,9 +178,8 @@ class Nightscout:
         self.token = token
         self.api_secret = api_secret
 
-    def fetch(self, minutes=None, max_count=None):
-        minutes = minutes or BACKFILL_SECONDS // 60
-        count = max_count or (minutes // 5 + 2)
+    def fetch(self):
+        _, count = _window()
         url = f"{self.base}/api/v1/entries.json?count={count}"
         if self.token:
             url += "&token=" + urllib.parse.quote(self.token)
@@ -191,8 +190,7 @@ class Nightscout:
                 headers["api-secret"] = hashlib.sha1(
                     self.api_secret.encode()).hexdigest()
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15,
-                                        context=ssl.create_default_context()) as r:
+            with urllib.request.urlopen(req, timeout=15, context=_SSL) as r:
                 raw = json.loads(r.read().decode())
         except urllib.error.HTTPError as exc:
             raise SourceError(f"Nightscout HTTP {exc.code}", "HTTP",
@@ -205,7 +203,7 @@ class Nightscout:
             if "sgv" not in item:
                 continue
             epoch = int(item.get("date", 0)) // 1000 or int(item.get("mills", 0)) // 1000
-            readings.append(Reading(epoch, item["sgv"], parse_trend(item.get("direction"))))
+            readings.append(Sample(epoch, item["sgv"], parse_trend(item.get("direction"))))
         readings.sort(key=lambda r: r.epoch)
         return readings
 
@@ -221,33 +219,3 @@ def build(config):
         return Nightscout(creds.get("url", ""), creds.get("token"),
                           creds.get("api_secret"))
     raise SourceError(f"unknown source {kind!r}", "CONFIG", fatal=True)
-
-
-# src/BGDisplayFaceValueAndDiff.cpp:37-91. Not "latest minus previous": Dexcom
-# Share returns the same reading twice about 11 s apart, so the previous element
-# is often the current one's twin and the delta comes out zero. The firmware
-# takes everything inside a 6.5 minute window and works from its min and max,
-# which is immune to that.
-DIFF_WINDOW_SECONDS = 6 * 60 + 30
-
-
-def delta_for(readings):
-    """Change since the previous reading, or None when it cannot be stated.
-
-    None means genuinely unknown - render it as "?", never as 0. A zero delta
-    on a falling glucose is worse than no delta at all."""
-    if len(readings) < 2:
-        return None
-    last = readings[-1]
-    window = [r for r in readings if last.epoch - r.epoch <= DIFF_WINDOW_SECONDS]
-    if len(window) > 5:  # Libre-style dense data: just the last two
-        window = window[-2:]
-    if len(window) < 2:
-        return None
-    lo = min(r.sgv for r in window)
-    hi = max(r.sgv for r in window)
-    base = last.sgv
-    if lo != base and hi != base:
-        return None  # moved both ways inside the window; no honest single number
-    delta = base - hi if lo == base else base - lo
-    return None if abs(delta) > 99 else delta

@@ -41,11 +41,9 @@ def row_mask(row):
 
 
 def ink_box(rows):
-    cols = [c for c in range(len(rows[0])) if any(r[c] == "1" for r in rows)]
-    inked = [i for i, r in enumerate(rows) if "1" in r]
-    if not cols:
-        return -1, -1, -1, -1
-    return cols[0], cols[-1], inked[0], inked[-1]
+    """render.ink_box, with the header's convention for a blank glyph (-1s)."""
+    c0, c1, r0, r1 = R.ink_box(rows)
+    return (-1, -1, -1, -1) if c1 < c0 else (c0, c1, r0, r1)
 
 
 def emit_font(out, name, table, w, h, role):
@@ -118,7 +116,7 @@ def write_fonts_h():
 
 
 def write_palette_h():
-    import faces as F
+    import model as F  # thresholds and the stale rule are model facts, not face facts
     def c(t):
         return f"{{{t[0]}, {t[1]}, {t[2]}}}"
     out = [

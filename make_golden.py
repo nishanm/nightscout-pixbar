@@ -11,43 +11,36 @@ with the exact inputs that produced it, and a firmware renderer passes when it
 reproduces every hash. A face change on this side regenerates the corpus in the same
 commit, so the diff shows exactly which frames moved.
 
-Determinism: faces plot history against wall-clock time, so `time.time` is pinned to
-FIXED_NOW *before* faces.py is imported (its demo STATES build their timestamps at
-import). Anything that still varies between runs is a bug in a face, and --check
-catches it.
+Determinism: the demo states and the graphs both hang off one `now`, which
+`faces.every_frame(now=FIXED_NOW)` pins. Anything that still varies between runs
+is a bug in a face, and --check catches it.
 """
 
 import hashlib
 import json
 import os
 import sys
-import time
+
+import faces as F
+import model as M
+import render as R
 
 FIXED_NOW = 1790510400  # 2026-09-27 12:00:00 UTC, arbitrary and permanent
-time.time = lambda: FIXED_NOW  # noqa: E305 - must precede the faces import
-
-import faces as F  # noqa: E402
-import render as R  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "golden")
 MANIFEST = os.path.join(OUT, "manifest.json")
 
 
-def raw_rgb(panel):
-    return bytes(v for row in panel.px for px in row for v in px)
-
-
-def entry(slug, state, reading, panel):
-    raw = raw_rgb(panel)
+def entry(face, state, reading, panel):
     return {
-        "face": slug,
+        "face": face.slug,
         "state": state,
-        "file": f"{slug}--{state}.png",
+        "file": f"{face.slug}--{state}.png",
         "width": panel.w,
         "height": panel.h,
-        "sha256_rgb888": hashlib.sha256(raw).hexdigest(),
-        "lit_pixels": sum(1 for row in panel.px for c in row if any(c)),
+        "sha256_rgb888": hashlib.sha256(R.raw_rgb(panel)).hexdigest(),
+        "lit_pixels": R.lit_pixels(panel),
         "clipped": panel.clipped,
         "inputs": {
             "sgv": reading.sgv,
@@ -61,17 +54,11 @@ def entry(slug, state, reading, panel):
     }
 
 
-def render_all():
-    for slug, _name, fn, _desc in F.FACES:
-        for state, reading in F.STATES:
-            yield slug, state, reading, fn(reading)
-
-
 def write():
     os.makedirs(OUT, exist_ok=True)
     entries = []
-    for slug, state, reading, panel in render_all():
-        e = entry(slug, state, reading, panel)
+    for face, state, reading, panel in F.every_frame(now=FIXED_NOW):
+        e = entry(face, state, reading, panel)
         with open(os.path.join(OUT, e["file"]), "wb") as fh:
             fh.write(R.png_raw(panel))
         entries.append(e)
@@ -79,9 +66,9 @@ def write():
         "generator": "make_golden.py",
         "fixed_now": FIXED_NOW,
         "panel": {"width": R.W, "height": R.H, "pixel_format": "RGB888 row-major, top-left origin"},
-        "thresholds_mgdl": {"urgent_low": F.URGENT_LOW, "warn_low": F.WARN_LOW,
-                             "warn_high": F.WARN_HIGH, "urgent_high": F.URGENT_HIGH},
-        "stale_minutes": F.STALE_MINUTES,
+        "thresholds_mgdl": {"urgent_low": M.URGENT_LOW, "warn_low": M.WARN_LOW,
+                             "warn_high": M.WARN_HIGH, "urgent_high": M.URGENT_HIGH},
+        "stale_minutes": M.STALE_MINUTES,
         "colors_rgb888": {"normal": R.BG_NORMAL, "warning": R.BG_WARNING, "urgent": R.BG_URGENT,
                           "stale": R.GRAY, "white": R.WHITE},
         "dim_rule": "FastLED scale8 fixed: c * (factor + 1) >> 8, per channel",
@@ -99,17 +86,17 @@ def check(tamper=None):
         manifest = json.load(fh)
     want = {(e["face"], e["state"]): e for e in manifest["frames"]}
     bad, seen = [], 0
-    for slug, state, reading, panel in render_all():
+    for face, state, _reading, panel in F.every_frame(now=manifest["fixed_now"]):
         seen += 1
-        if tamper == (slug, state):
+        if tamper == (face.slug, state):
             panel.px[0][0] = R.WHITE  # a planted fault; the check must notice
-        e = want.get((slug, state))
+        e = want.get((face.slug, state))
         if e is None:
-            bad.append(f"{slug}/{state}: not in manifest")
+            bad.append(f"{face.slug}/{state}: not in manifest")
             continue
-        got = hashlib.sha256(raw_rgb(panel)).hexdigest()
+        got = hashlib.sha256(R.raw_rgb(panel)).hexdigest()
         if got != e["sha256_rgb888"]:
-            bad.append(f"{slug}/{state}: rendered {got[:12]} != golden {e['sha256_rgb888'][:12]}")
+            bad.append(f"{face.slug}/{state}: rendered {got[:12]} != golden {e['sha256_rgb888'][:12]}")
     if seen != len(want):
         bad.append(f"manifest has {len(want)} frames, renderer produced {seen}")
     for line in bad:

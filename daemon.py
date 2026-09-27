@@ -4,41 +4,34 @@
     python daemon.py --once          # one cycle, then exit
     python daemon.py --face hero     # override the face
 
-Two behaviours exist because of things measured on the hardware, not guessed:
+Behaviours that exist because of things measured on the hardware, not guessed:
 
 * **The custom app is re-created when it disappears.** A restart clears custom
   apps (measured 2026-09-26), so a pusher that assumes its app still exists
   goes quietly blank after a device reboot. Every cycle checks /api/customList.
-* **A failure draws a face, it does not skip a frame.** A glucose display that
-  freezes on an old number is worse than one that says it has no data, because
-  a stale reading still looks like a reading.
-
 * **The app is brought on screen after it is (re)created.** `POST
-  /api/switchDiyApp?name=<app>` exists on firmware 1.1.0+ (Ulanzi's own
-  protocol doc; measured 200 on 1.1.3 on 2026-09-27 - the earlier "it does not
-  exist" finding had probed it with GET, which 404s). So a device that reboots
-  overnight gets its glucose page back by itself instead of sitting on the
-  weather. It is NOT re-asserted every cycle by default, because that would
-  fight the knob; PIXBAR_PIN_SECONDS=<n> opts into re-asserting every n seconds
-  for a display nobody is meant to turn away from.
+  /api/switchDiyApp` (firmware 1.1.0+, measured on 1.1.3) puts the glucose page
+  back after a reboot instead of leaving the weather up. It is NOT re-asserted
+  every cycle by default - that would fight the knob - but PIXBAR_PIN_SECONDS=n
+  re-asserts every n seconds for a panel nobody is meant to turn away from.
+* **A failure draws a face, it does not skip a frame.** The last good samples
+  are re-read as of now, so the reading ages honestly into the stale state; a
+  glucose display frozen on an old number is worse than one that says so.
+* **A fatal source error backs off** (5 -> 30 min) instead of retrying every
+  minute: unattended for weeks against Dexcom Share, a wrong password polled
+  in a tight loop is how the account gets locked.
 """
 
 import argparse
-import json
 import sys
 import time
-import urllib.parse
-import urllib.request
 
 import config as C
 import faces as F
-import push
-import render as R
 import sources
+from device import Device, DeviceError
+from model import Reading
 
-STALE_AFTER = F.STALE_MINUTES * 60
-
-# Backoff window for fatal (credential) source errors. See main().
 FATAL_BACKOFF_MIN = 300
 FATAL_BACKOFF_MAX = 1800
 
@@ -47,98 +40,55 @@ def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
-def switch_to(host, app):
-    """Ask the device to show our custom app. POST, not GET: the GET form 404s
-    and is what made this look impossible for a day. Returns the device's reply
-    text, or the error, and never raises - losing the switch must not lose the
-    frame."""
-    url = f"http://{host}/api/switchDiyApp?name={urllib.parse.quote(app)}"
-    req = urllib.request.Request(url, data=b"", method="POST")
+def face_for(configured, reading, source_ok):
+    """Which face draws this reading. The configured one, except that a reading
+    the source can no longer refresh degrades to the explicit no-data face once
+    it is stale - a grey `---` on the hero face says less than `? 27M`."""
+    if not source_ok and reading.stale:
+        return F.face_no_data
+    return configured
+
+
+def cycle(cfg, source, dev, configured_face, last_samples):
+    """One poll-render-push. Returns (last_samples, fatal); fatal means the
+    source said retrying will not help, and the caller backs off."""
+    now = time.time()
+    fatal, source_ok = False, True
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.read().decode(errors="replace").strip()
-    except Exception as exc:
-        return f"switch failed: {exc}"
-
-
-def app_exists(host, app):
-    try:
-        with urllib.request.urlopen(f"http://{host}/api/customList", timeout=5) as r:
-            return app in (json.loads(r.read().decode()).get("apps") or [])
-    except Exception:
-        return False  # unreachable counts as "assume not there", and we re-push
-
-
-def to_reading(readings, units="mgdl"):
-    """Newest reading, its delta by the firmware's window rule, and the history
-    as (epoch, sgv) so the graph can plot against time."""
-    latest = readings[-1]
-    delta = sources.delta_for(readings)
-    minutes_ago = max(0, int((time.time() - latest.epoch) / 60))
-    history = [(r.epoch, r.sgv) for r in readings]
-    return F.Reading(
-        sgv=latest.sgv,
-        trend=latest.trend,
-        delta=delta,
-        minutes_ago=minutes_ago,
-        time=time.strftime("%H:%M"),
-        history=history,
-    )
-
-
-def error_reading(reason, minutes_ago=999):
-    """A Reading that renders as the no-data state, carrying why."""
-    r = F.Reading(0, "NONE", 0, minutes_ago, time.strftime("%H:%M"), [])
-    r.reason = reason
-    return r
-
-
-def cycle(cfg, source, face_fn, last_good):
-    """One poll-render-push. Returns (last_good, fatal), where fatal means the
-    source said retrying will not help - the caller backs off on that."""
-    host, app = cfg["host"], cfg["app"]
-    fatal = False
-    try:
-        readings = source.fetch()
-        if not readings:
+        samples = source.fetch()
+        if not samples:
             raise sources.SourceError("source returned no readings", "NO DATA")
-        reading = to_reading(readings, cfg.get("units", "mgdl"))
-        last_good = reading
-        age = int(time.time() - readings[-1].epoch)
-        state = "stale" if age > STALE_AFTER else "ok"
-        shown = "?" if reading.delta is None else f"{reading.delta:+d}"
-        log(f"{reading.sgv} {reading.trend} delta={shown} "
-            f"age={reading.minutes_ago}m points={len(reading.history)} [{state}]")
+        last_samples = samples
+        reading = Reading.from_samples(samples, now)
+        log(f"{reading.sgv} {reading.trend} delta={reading.delta_text() or '-'} "
+            f"age={reading.minutes_ago}m points={len(samples)} "
+            f"[{'stale' if reading.stale else 'ok'}]")
     except sources.SourceError as exc:
-        # Keep showing the last good reading, ageing, so the panel degrades into
-        # the stale face by itself rather than jumping straight to an error.
         log(f"source error: {exc} ({exc.reason}){' FATAL' if exc.fatal else ''}")
-        if last_good is not None:
-            last_good.minutes_ago += max(1, cfg["poll_seconds"] // 60)  # age it honestly
-            reading = last_good
-            face_fn = F.face_no_data if last_good.minutes_ago >= F.STALE_MINUTES else face_fn
+        fatal, source_ok = exc.fatal, False
+        if last_samples:
+            reading = Reading.from_samples(last_samples, now)   # same data, older
         else:
-            reading = error_reading(exc.reason)
-            face_fn = F.face_no_data
-        fatal = exc.fatal
+            reading = Reading(0, "NONE", None, 999, time.strftime("%H:%M"), [], now=now)
 
-    panel = face_fn(reading)
+    panel = face_for(configured_face, reading, source_ok)(reading)
     if panel.clipped:
         log(f"WARNING: {panel.clipped} pixels drawn off-panel (run audit.py)")
-    missing = not app_exists(host, app)
+
+    missing = not dev.app_exists()
     if missing:
-        log(f"custom app {app!r} was missing - re-creating it (device restart?)")
+        log(f"custom app {dev.app!r} was missing - re-creating it (device restart?)")
     try:
-        ms, size, body = push.send_panel(host, app, panel, duration=300)
-        if '"code":200' not in body:
-            log(f"device refused the frame: {body.strip()}")
+        _, _, reply = dev.send_panel(panel, duration=300)
+        if reply.get("code") != 200:
+            log(f"device refused the frame: {reply}")
         elif missing:
             # It exists again; now put it on screen, or the reboot leaves the
             # panel on whatever app the device woke up showing.
-            log(f"switch to {app!r}: {switch_to(host, app)}")
-    except Exception as exc:
+            log(f"switch to {dev.app!r}: {dev.switch_to()}")
+    except DeviceError as exc:
         log(f"push failed: {exc}")
-    return last_good, fatal
+    return last_samples, fatal
 
 
 def main():
@@ -152,12 +102,9 @@ def main():
     args = ap.parse_args()
 
     cfg = C.load()
-    if args.face:
-        cfg["face"] = args.face
-    if args.host:
-        cfg["host"] = args.host
-    if args.poll:
-        cfg["poll_seconds"] = args.poll
+    for key, value in (("face", args.face), ("host", args.host), ("poll_seconds", args.poll)):
+        if value:
+            cfg[key] = value
     log(C.describe(cfg))
 
     try:
@@ -166,39 +113,44 @@ def main():
         log(f"cannot build source: {exc}")
         return 2
 
-    face_fn = dict((s, f) for s, _, f, _ in F.FACES).get(cfg["face"])
-    if face_fn is None:
-        log(f"unknown face {cfg['face']!r}; known: {[s for s, _, _, _ in F.FACES]}")
+    face = F.face(cfg["face"])
+    if face is None:
+        log(f"unknown face {cfg['face']!r}; known: {F.SLUGS}")
         return 2
 
-    # A fatal source error means bad credentials, and this runs unattended for
-    # weeks: polling Dexcom Share every 60 s with a wrong password is how the
-    # account gets locked - the homelab's own runbook says so in as many words.
-    # So back off on fatal errors instead of hammering, and reset on the first
-    # good reading. Non-fatal errors - a timeout, a 500, no net - keep the normal
-    # interval, because those clear by themselves and the panel wants the retry.
-    last_good, fatal_streak = None, 0
-    pin, last_pin = int(cfg.get("pin_seconds") or 0), 0.0
+    dev = Device(cfg["host"], cfg["app"])
+    period = cfg["poll_seconds"]
+    pin = int(cfg.get("pin_seconds") or 0)
+
+    def switch(why):
+        try:
+            log(f"{why}: switch to {dev.app!r}: {dev.switch_to()}")
+        except DeviceError as exc:
+            log(f"{why}: switch failed: {exc}")
+
+    last_samples, fatal_streak, last_pin = None, 0, 0.0
     if args.switch or pin:
-        log(f"switch to {cfg['app']!r}: {switch_to(cfg['host'], cfg['app'])}")
+        switch("start")
         last_pin = time.time()
     while True:
-        last_good, fatal = cycle(cfg, source, face_fn, last_good)
+        started = time.time()
+        last_samples, fatal = cycle(cfg, source, dev, face.fn, last_samples)
         if pin and time.time() - last_pin >= pin:
-            log(f"pin: switch to {cfg['app']!r}: {switch_to(cfg['host'], cfg['app'])}")
+            switch("pin")
             last_pin = time.time()
         if args.once:
             return 0
-        delay = cfg["poll_seconds"]
+        delay = period
         if fatal:
             fatal_streak += 1
-            delay = min(FATAL_BACKOFF_MAX,
-                        max(FATAL_BACKOFF_MIN, cfg["poll_seconds"]) * 2 ** (fatal_streak - 1))
+            delay = min(FATAL_BACKOFF_MAX, max(FATAL_BACKOFF_MIN, period) * 2 ** (fatal_streak - 1))
             log(f"credentials or config look wrong ({fatal_streak} in a row) - "
                 f"backing off {delay}s instead of retrying in a tight loop")
         else:
             fatal_streak = 0
-        time.sleep(delay)
+        # Deadline, not "sleep after the work": the period is the period, not
+        # the period plus however long the network took this time.
+        time.sleep(max(0.0, delay - (time.time() - started)))
 
 
 if __name__ == "__main__":

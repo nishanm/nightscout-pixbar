@@ -15,50 +15,24 @@ Colour is not decoration here: the value's colour IS the glucose state
 (BG_COLOR_NORMAL / _WARNING / _URGENT, src/globals.h:59-61), so everything else
 stays white or dim and never competes with it.
 
-Thresholds are the ones our clocks run: 55 / 70 / 180 / 250 mg/dL.
+What a reading is - thresholds, stale, delta, trend vocabulary - lives in
+model.py. This file only decides how it looks.
 """
 
 import time as _time
+from collections import namedtuple
 
 import render as R
-
-URGENT_LOW, WARN_LOW, WARN_HIGH, URGENT_HIGH = 55, 70, 180, 250
-STALE_MINUTES = 20
+from model import (STALE_MINUTES, URGENT_HIGH, URGENT_LOW, WARN_HIGH, WARN_LOW,
+                   Reading, band)
 
 PAD = 1  # left/right margin; nothing but a full-bleed graph touches the edge
 
-
-class Reading:
-    def __init__(self, sgv, trend, delta, minutes_ago=3, time="14:32", history=None):
-        self.sgv = sgv
-        self.trend = trend
-        self.delta = delta
-        self.minutes_ago = minutes_ago
-        self.time = time
-        self.history = history or []
-
-    @property
-    def stale(self):
-        return self.minutes_ago >= STALE_MINUTES
-
-    def value_text(self):
-        return "---" if self.stale else str(self.sgv)
-
-    def delta_text(self):
-        # None means "cannot be stated honestly" (see sources.delta_for) and must
-        # render as "?", never as +0 - a zero delta on a falling glucose is worse
-        # than no delta at all.
-        if self.stale:
-            return ""
-        return "?" if self.delta is None else f"{self.delta:+d}"
+_BAND_COLOR = {"normal": R.BG_NORMAL, "warning": R.BG_WARNING, "urgent": R.BG_URGENT}
 
 
 def color_for(sgv):
-    if sgv <= URGENT_LOW or sgv >= URGENT_HIGH:
-        return R.BG_URGENT
-    if sgv < WARN_LOW or sgv > WARN_HIGH:
-        return R.BG_WARNING
-    return R.BG_NORMAL
+    return _BAND_COLOR[band(sgv)]
 
 
 def reading_color(r):
@@ -76,11 +50,10 @@ _SLOPE = {
 
 def trend_mark(panel, x, y, trend, color, w=9, h=15):
     """Up/down: stacked chevrons on a stem. Flat: a bar with a head. 45s: a
-    diagonal. Doubles get two chevrons."""
+    diagonal. Doubles get two chevrons. NONE: a question mark that fits the box."""
     if trend == "NONE":
-        # Fit the question mark to the box the caller gave us. The clock face
-        # allows 6 rows, which is smaller than any Spleen glyph, so fall back to
-        # the 3x5 font rather than spilling off the panel.
+        # Largest glyph that fits the height given; below every Spleen size
+        # (the clock face offers 6 rows) the 3x5 font is the honest fallback.
         for font in (R.MID, R.SMALL):
             gh = R.font_height(font, "?")
             if gh <= h:
@@ -132,8 +105,8 @@ def _bands(top, bottom):
     ]
 
 
-def row_for(sgv, top, bottom):
-    for lo, hi, first, last in _bands(top, bottom):
+def row_for(sgv, bands, bottom):
+    for lo, hi, first, last in bands:
         if lo <= sgv < hi:
             frac = min(1.0, max(0.0, (sgv - lo) / max(1, hi - lo)))
             return int(round(last - frac * (last - first)))
@@ -146,25 +119,22 @@ def draw_graph(panel, x, y, w, h, history, rails=True, span_minutes=180, now=Non
     index-based x axis silently stretches and squeezes the timeline."""
     top, bottom = y, y + h - 1
     now = now if now is not None else _time.time()
+    bands = _bands(top, bottom)
     if rails:
         # The in-range band gets a dim floor and ceiling so the trace has a frame
         # of reference. Marking the urgent rows instead (first pass) painted red
         # across a perfectly healthy panel.
-        _, _, in_first, in_last = _bands(top, bottom)[2]
+        _, _, in_first, in_last = bands[2]
+        rail = R.dim(R.WHITE, 34)
         for gx in range(x, x + w, 3):
-            panel.set(gx, in_first, R.dim(R.WHITE, 34))
-            panel.set(gx, in_last, R.dim(R.WHITE, 34))
-    for point in history:
-        epoch, sgv = point if isinstance(point, (tuple, list)) else (None, point)
-        if sgv is None:
-            continue
-        if epoch is None:      # no timestamps: fall back to even spacing
-            continue
+            panel.set(gx, in_first, rail)
+            panel.set(gx, in_last, rail)
+    for epoch, sgv in history:
         age_minutes = (now - epoch) / 60.0
         if age_minutes < 0 or age_minutes > span_minutes:
             continue
         col = x + w - 1 - int(round(age_minutes / span_minutes * (w - 1)))
-        panel.set(col, row_for(sgv, top, bottom), color_for(sgv))
+        panel.set(col, row_for(sgv, bands, bottom), color_for(sgv))
 
 
 def age_pips(panel, x, y, minutes_ago, color, count=4, gap=2):
@@ -193,7 +163,7 @@ def face_hero(r):
     c = reading_color(r)
     free = hero_value(p, r, c)
     mark_w = 9
-    trend_mark(p, max(free + 2, 52 - mark_w - PAD), 1, "NONE" if r.stale else r.trend, c, w=mark_w)
+    trend_mark(p, max(free + 2, 52 - mark_w - PAD), 1, r.trend_shown, c, w=mark_w)
     return p
 
 
@@ -203,7 +173,7 @@ def face_hero_delta(r):
     c = reading_color(r)
     free = hero_value(p, r, c) + 2
     mark_w = 7
-    trend_mark(p, free, 1, "NONE" if r.stale else r.trend, c, w=mark_w, h=15)
+    trend_mark(p, free, 1, r.trend_shown, c, w=mark_w, h=15)
     right = free + mark_w + 2
     delta = r.delta_text()
     # Only claim the right column when the value actually left one - a 3-digit
@@ -222,7 +192,8 @@ def face_hero_graph(r):
     p = R.Panel()
     c = reading_color(r)
     free = hero_value(p, r, c)
-    draw_graph(p, max(free + 2, 31), 0, 52 - max(free + 2, 31), 16, r.history)
+    gx = max(free + 2, 31)
+    draw_graph(p, gx, 0, 52 - gx, 16, r.history, now=r.now)
     return p
 
 
@@ -234,7 +205,7 @@ def face_clock(r):
     # right-aligned. 23 + 18 + margins fits 52 with room to breathe.
     R.font_text(p, PAD, 1, r.time, R.SMALL, R.dim(R.WHITE, 110))
     R.font_text_right(p, 51 - PAD, 3, r.value_text(), R.MID, c)
-    trend_mark(p, PAD, 10, "NONE" if r.stale else r.trend, c, w=7, h=6)
+    trend_mark(p, PAD, 10, r.trend_shown, c, w=7, h=6)
     age_pips(p, 12, 13, r.minutes_ago, c)
     return p
 
@@ -243,7 +214,7 @@ def face_big_graph(r):
     """The panel is history. The value rides on the right over a cleared box."""
     p = R.Panel()
     c = reading_color(r)
-    draw_graph(p, 0, 0, 52, 16, r.history)
+    draw_graph(p, 0, 0, 52, 16, r.history, now=r.now)
     label = r.value_text()
     w = R.font_width(R.MID, label)
     p.rect(52 - w - 3, 2, w + 3, 12, R.BLACK)
@@ -264,34 +235,75 @@ def face_no_data(r):
     return p
 
 
+# --------------------------------------------------------------------- registry
+# Everything a tool needs to know about a face lives on the face: which demo
+# state shows it off, and whether it may touch the panel's edge columns (the
+# graphs are full-bleed by design; anything else touching column 0 or 51 is one
+# pixel from being clipped). Tools ask the record instead of keeping their own
+# lists of exceptions.
+Face = namedtuple("Face", "slug name fn about full_bleed demo_state")
+
 FACES = [
-    ("hero", "Hero", face_hero, "One number filling the panel, plus direction"),
-    ("hero-delta", "Hero + delta", face_hero_delta, "Hero value, direction, delta and age pips"),
-    ("hero-graph", "Hero + graph", face_hero_graph, "Hero value left, history right"),
-    ("clock", "Clock + value", face_clock, "Time and value side by side, bedside face"),
-    ("big-graph", "Big graph", face_big_graph, "Full-panel history, value riding on the right"),
-    ("no-data", "No data", face_no_data, "Explicit stale state with minutes since last reading"),
+    Face("hero", "Hero", face_hero, "One number filling the panel, plus direction", False, "in-range"),
+    Face("hero-delta", "Hero + delta", face_hero_delta, "Hero value, direction, delta and age pips", False, "in-range"),
+    Face("hero-graph", "Hero + graph", face_hero_graph, "Hero value left, history right", True, "in-range"),
+    Face("clock", "Clock + value", face_clock, "Time and value side by side, bedside face", False, "in-range"),
+    Face("big-graph", "Big graph", face_big_graph, "Full-panel history, value riding on the right", True, "in-range"),
+    Face("no-data", "No data", face_no_data, "Explicit stale state with minutes since last reading", False, "stale"),
 ]
+SLUGS = [f.slug for f in FACES]
+_BY_SLUG = {f.slug: f for f in FACES}
+
+
+def face(slug):
+    """The Face record for a slug, or None."""
+    return _BY_SLUG.get(slug)
 
 
 # ------------------------------------------------------------------ demo states
-def _history(base, drift, n=36, jitter=(0, 3, -2, 5, -4, 2, -1, 4), newest_age_min=3):
+def _history(base, drift, now, n=36, jitter=(0, 3, -2, 5, -4, 2, -1, 4), newest_age_min=3):
     """[(epoch, sgv)] on the real 5-minute CGM cadence, newest last."""
     out, v = [], base - drift * n * 0.6
-    now = _time.time()
     for i in range(n):
         v += drift + jitter[i % len(jitter)] * 0.5
         age = (n - 1 - i) * 5 + newest_age_min
-        out.append((int(now - age * 60), int(max(40, min(320, v))))) 
+        out.append((int(now - age * 60), int(max(40, min(320, v)))))
     out[-1] = (out[-1][0], base)
     return out
 
 
-STATES = [
-    ("in-range", Reading(118, "FLAT", 2, 3, "14:32", _history(118, 0.2))),
-    ("warn-high", Reading(210, "SINGLE_UP", 12, 4, "21:07", _history(210, 0.9))),
-    ("urgent-high", Reading(287, "DOUBLE_UP", 21, 2, "22:15", _history(287, 1.6))),
-    ("warn-low", Reading(66, "SINGLE_DOWN", -9, 3, "03:41", _history(66, -0.8))),
-    ("urgent-low", Reading(48, "DOUBLE_DOWN", -15, 2, "03:58", _history(48, -1.4))),
-    ("stale", Reading(104, "FLAT", 0, 27, "07:12", _history(104, 0.1)[:-5])),
-]
+STATE_NAMES = ["in-range", "warn-high", "urgent-high", "warn-low", "urgent-low", "stale"]
+
+
+def demo_states(now=None):
+    """The six readings every face is judged in, as of `now` (default: the
+    wall clock). Pass a fixed `now` for a reproducible corpus - the histories
+    and the graphs both hang off it, so one value pins everything."""
+    now = _time.time() if now is None else now
+
+    def r(sgv, trend, delta, minutes_ago, clock, drift, cut=None):
+        history = _history(sgv, drift, now)
+        return Reading(sgv, trend, delta, minutes_ago, clock, history[:cut], now=now)
+
+    return [
+        ("in-range", r(118, "FLAT", 2, 3, "14:32", 0.2)),
+        ("warn-high", r(210, "SINGLE_UP", 12, 4, "21:07", 0.9)),
+        ("urgent-high", r(287, "DOUBLE_UP", 21, 2, "22:15", 1.6)),
+        ("warn-low", r(66, "SINGLE_DOWN", -9, 3, "03:41", -0.8)),
+        ("urgent-low", r(48, "DOUBLE_DOWN", -15, 2, "03:58", -1.4)),
+        ("stale", r(104, "FLAT", 0, 27, "07:12", 0.1, cut=-5)),
+    ]
+
+
+def state(name, now=None):
+    """One demo reading by name."""
+    return dict(demo_states(now))[name]
+
+
+def every_frame(now=None):
+    """Every face in every demo state, rendered: (face, state_name, reading,
+    panel). FACES outer, states inner - the golden manifest's order."""
+    states = demo_states(now)
+    for f in FACES:
+        for name, reading in states:
+            yield f, name, reading, f.fn(reading)

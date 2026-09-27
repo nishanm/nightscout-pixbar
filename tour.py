@@ -1,86 +1,60 @@
 """Live review tour: put every face, then the states that matter, then three
 brightness levels, on the real panel with a dwell long enough to judge them.
 
-Brightness is changed the safe way - GET the whole config, edit one key, POST it
-back - because this device's setConfig, like the TC001's /api/save, stores what
-it is handed rather than merging (see the nightscout-clock notes). The level
-in use when the tour starts is restored at the end, whatever happens.
+Brightness is changed the safe way (Device.set_brightness: GET the whole
+config, edit one key, POST it back) because this device's setConfig, like the
+TC001's /api/save, stores what it is handed rather than merging. The level in
+use when the tour starts is restored at the end, whatever happens.
 """
 
-import json
 import sys
 import time
-import urllib.request
 
+import config as C
 import faces as F
-import push
-import render as R
+from device import Device
 
-HOST = push.DEFAULT_HOST
-APP = push.DEFAULT_APP
 DWELL = 15
 
 
-def get(path):
-    with urllib.request.urlopen(f"http://{HOST}{path}", timeout=6) as r:
-        return json.loads(r.read().decode())
+def stamp(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def set_config(cfg):
-    req = urllib.request.Request(
-        f"http://{HOST}/setConfig",
-        data=json.dumps(cfg).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=6) as r:
-        return r.read().decode().strip()
-
-
-def show(label, panel, dwell=DWELL):
-    ms, size, body = push.send_panel(HOST, APP, panel, duration=dwell + 30)
-    print(f"[{time.strftime('%H:%M:%S')}] {label:<34} {size:>4} B  {ms:>4.0f} ms  {body.strip()}",
-          flush=True)
+def show(dev, label, panel, dwell=DWELL):
+    ms, size, reply = dev.send_panel(panel, duration=dwell + 30)
+    stamp(f"{label:<34} {size:>4} B  {ms:>4.0f} ms  {reply}")
     time.sleep(dwell)
 
 
 def main():
-    in_range = dict(F.STATES)["in-range"]
-    original = get("/getConfig")
-    started_level = original["brightness"]["level"]
-    print(f"brightness at start: {original['brightness']}", flush=True)
+    cfg = C.load()
+    dev = Device(cfg["host"], cfg["app"])
+    hero_delta = F.face("hero-delta").fn
+    started_level = dev.get_config()["brightness"]["level"]
+    stamp(f"brightness at start: {started_level}")
 
     try:
-        print("--- part 1: the five faces, in range", flush=True)
-        for slug, name, fn, _ in F.FACES:
-            state = dict(F.STATES)["stale" if slug == "no-data" else "in-range"]
-            show(f"face: {name}", fn(state))
+        print("--- part 1: every face, in the state that shows it off", flush=True)
+        for face in F.FACES:
+            show(dev, f"face: {face.name}", face.fn(F.state(face.demo_state)))
 
         print("--- part 2: the states that must never be missed", flush=True)
-        for state_name in ("urgent-low", "urgent-high", "stale"):
-            show(f"state: {state_name}", F.face_hero_delta(dict(F.STATES)[state_name]))
+        for name in ("urgent-low", "urgent-high", "stale"):
+            show(dev, f"state: {name}", hero_delta(F.state(name)))
 
         print("--- part 3: brightness, on the urgent-low face", flush=True)
-        urgent = F.face_hero_delta(dict(F.STATES)["urgent-low"])
-        push.send_panel(HOST, APP, urgent, duration=300)
+        dev.send_panel(hero_delta(F.state("urgent-low")), duration=300)
         for level in ("high", "mid", "low"):
-            cfg = get("/getConfig")
-            cfg["brightness"]["level"] = level
-            body = set_config(cfg)
-            now = get("/getConfig")["brightness"]["level"]
-            print(f"[{time.strftime('%H:%M:%S')}] brightness -> {level:<5} (device says {now})"
-                  f"  {body[:60]}", flush=True)
+            stamp(f"brightness -> {level:<5} (device says {dev.set_brightness(level)})")
             time.sleep(DWELL)
 
         print("--- part 4: the stale face at the lowest brightness", flush=True)
-        show("stale @ low", F.face_hero_delta(dict(F.STATES)["stale"]))
+        show(dev, "stale @ low", hero_delta(F.state("stale")))
     finally:
-        cfg = get("/getConfig")
-        cfg["brightness"]["level"] = started_level
-        set_config(cfg)
-        restored = get("/getConfig")["brightness"]["level"]
-        push.send_panel(HOST, APP, F.face_hero_delta(in_range), duration=600)
-        print(f"restored brightness to {restored} (was {started_level}); "
-              f"Overview/in-range left on screen", flush=True)
+        restored = dev.set_brightness(started_level)
+        dev.send_panel(hero_delta(F.state("in-range")), duration=600)
+        stamp(f"restored brightness to {restored} (was {started_level}); hero-delta/in-range left on screen")
         if restored != started_level:
             print("WARNING: brightness did not restore", file=sys.stderr)
 

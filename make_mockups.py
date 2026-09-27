@@ -2,8 +2,8 @@
 
 Outputs into mockups/:
   face-<slug>.png        one face, its six states stacked (phone-friendly)
-  all-faces.png          every face in range, for comparing layouts
-  brightness-floor.png   the legibility check: full / dim / floor
+  all-faces.png          every face in the state that shows it off
+  brightness-floor.png   the legibility check: full / night / floor
   index.html             labelled gallery, no external files
 
 Run: python make_mockups.py
@@ -21,11 +21,7 @@ SCALE = 14
 # device config here has brightness.low = 50 (%), so the middle column is the
 # realistic night setting and the right one is the worst case.
 LEVELS = [("full", 255), ("night", 60), ("floor", 12)]
-
-
-def render_png(panel, path, scale=SCALE):
-    with open(os.path.join(OUT, path), "wb") as f:
-        f.write(R.png_leds(panel, scale=scale))
+NIGHT = 60
 
 
 def sheet(panels, path, scale=SCALE):
@@ -37,38 +33,22 @@ def sheet(panels, path, scale=SCALE):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    cells = {}
+    cells, dim_cells, by_face = {}, {}, {}
+    # One render per face x state serves the sheet, the gallery and its night row.
+    for face, state, _reading, p in F.every_frame():
+        cells[(face.slug, state)] = R.data_uri(R.png_leds(p, scale=10))
+        dim_cells[(face.slug, state)] = R.data_uri(R.png_leds(p.dimmed(NIGHT), scale=10))
+        by_face.setdefault(face.slug, []).append(p)
+    for face in F.FACES:
+        sheet(by_face[face.slug], f"face-{face.slug}.png")
 
-    for slug, name, fn, about in F.FACES:
-        panels = []
-        for state, reading in F.STATES:
-            p = fn(reading)
-            cells[(slug, state)] = R.data_uri(R.png_leds(p, scale=10))
-            panels.append(p)
-        sheet(panels, f"face-{slug}.png")
-
-    in_range = F.STATES[0][1]
-    stale_reading = dict(F.STATES)["stale"]
-    # The no-data face only says anything in its own state, so show it that way.
-    sheet(
-        [fn(stale_reading if slug == "no-data" else in_range) for slug, _, fn, _ in F.FACES],
-        "all-faces.png",
-    )
+    sheet([face.fn(F.state(face.demo_state)) for face in F.FACES], "all-faces.png")
 
     # Legibility: the states that must never be missed, at three brightnesses.
-    urgent_low = dict(F.STATES)["urgent-low"]
-    stale = dict(F.STATES)["stale"]
-    bright = []
-    for reading in (in_range, urgent_low, stale):
-        for _, level in LEVELS:
-            bright.append(F.face_hero_delta(reading).dimmed(level))
-    sheet(bright, "brightness-floor.png")
-
-    dim_cells = {}
-    for slug, name, fn, about in F.FACES:
-        for state, reading in F.STATES:
-            p = fn(reading).dimmed(60)
-            dim_cells[(slug, state)] = R.data_uri(R.png_leds(p, scale=10))
+    hero_delta = F.face("hero-delta").fn
+    sheet([hero_delta(F.state(name)).dimmed(level)
+           for name in ("in-range", "urgent-low", "stale") for _, level in LEVELS],
+          "brightness-floor.png")
 
     html = [
         "<!doctype html><html><head><meta charset='utf-8'>",
@@ -88,18 +68,17 @@ def main():
         "firmware's own RGB565 constants, and the lower row of each pair is the same face at a night "
         "brightness, because a face that vanishes when dimmed is not a face we can ship.</p>",
     ]
-    state_names = [s for s, _ in F.STATES]
-    for slug, name, fn, about in F.FACES:
-        html.append(f"<h2>{name}</h2><p class='about'>{about}</p><table><tr><th></th>")
-        html += [f"<th>{s}</th>" for s in state_names]
+    for face in F.FACES:
+        html.append(f"<h2>{face.name}</h2><p class='about'>{face.about}</p><table><tr><th></th>")
+        html += [f"<th>{s}</th>" for s in F.STATE_NAMES]
         html.append("</tr><tr><th>full</th>")
-        html += [f"<td><img src='{cells[(slug, s)]}' alt='{name} {s}'></td>" for s in state_names]
+        html += [f"<td><img src='{cells[(face.slug, s)]}' alt='{face.name} {s}'></td>" for s in F.STATE_NAMES]
         html.append("</tr><tr><th>night</th>")
-        html += [f"<td><img src='{dim_cells[(slug, s)]}' alt='{name} {s} dim'></td>" for s in state_names]
+        html += [f"<td><img src='{dim_cells[(face.slug, s)]}' alt='{face.name} {s} dim'></td>" for s in F.STATE_NAMES]
         html.append("</tr></table>")
     html.append(
         "<p class='note'>Every frame here is a real 52&times;16 pixel buffer - the same buffer the "
-        "device pusher would send as a base64 PNG (measured 41 fps end to end on 2026-09-25).</p>"
+        "device pusher sends as a base64 PNG (measured 41 fps end to end on 2026-09-25).</p>"
     )
     html.append("</body></html>")
     with open(os.path.join(OUT, "index.html"), "w", encoding="utf-8") as f:

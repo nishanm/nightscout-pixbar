@@ -17,7 +17,9 @@ mounted into a read-only container would have been a second pattern for no gain.
 Env wins over file so a deployed container cannot be silently reconfigured by a
 stale file that happens to be in its working copy.
 
-Nothing here ever prints a credential. `describe()` returns booleans and lengths.
+Values are mg/dL throughout; there is no unit setting because nothing converts.
+
+Nothing here ever prints a credential. `describe()` returns booleans only.
 """
 
 import json
@@ -33,7 +35,6 @@ DEFAULTS = {
     "face": "hero-delta",
     "poll_seconds": 60,        # cheap; the source itself only moves every 5 min
     "source": "dexcom",
-    "units": "mgdl",
     "pin_seconds": 0,          # >0: re-assert switchDiyApp every n s (fights the knob; opt-in)
 }
 
@@ -44,7 +45,6 @@ ENV_MAP = {
     "PIXBAR_FACE": (("face",), str),
     "PIXBAR_POLL_SECONDS": (("poll_seconds",), int),
     "PIXBAR_SOURCE": (("source",), str),
-    "PIXBAR_UNITS": (("units",), str),
     "PIXBAR_PIN_SECONDS": (("pin_seconds",), int),
     "PIXBAR_DEXCOM_USERNAME": (("dexcom", "username"), str),
     "PIXBAR_DEXCOM_PASSWORD": (("dexcom", "password"), str),
@@ -55,13 +55,16 @@ ENV_MAP = {
 }
 
 
-def _from_clock_config(path):
-    """Translate the TC001 config into ours. Only the keys we need."""
+def _read_json(path):
     with open(path, encoding="utf-8") as fh:
-        clock = json.load(fh)
+        return json.load(fh)
+
+
+def _read_clock_config(path):
+    """Translate the TC001 config into ours. Only the keys we need."""
+    clock = _read_json(path)
     return {
         "source": clock.get("data_source", "dexcom"),
-        "units": clock.get("units", "mgdl"),
         "dexcom": {
             "username": clock.get("dexcom_username"),
             "password": clock.get("dexcom_password"),
@@ -74,12 +77,12 @@ def _from_clock_config(path):
     }
 
 
-def _apply_env(cfg, environ=None):
+def _apply_env(cfg, environ):
     """Overlay PIXBAR_* variables. An empty value is ignored, not applied: an
     env_file that carries `PIXBAR_DEXCOM_PASSWORD=` to mean "unset" must not
-    blank out a password that a config file supplied."""
-    environ = os.environ if environ is None else environ
-    applied = []
+    blank out a password that a config file supplied. Returns whether any
+    variable was applied."""
+    applied = False
     for name, (path, coerce) in ENV_MAP.items():
         raw = environ.get(name)
         if raw is None or raw.strip() == "":
@@ -94,31 +97,26 @@ def _apply_env(cfg, environ=None):
             if not isinstance(target, dict):
                 raise ValueError(f"{name} cannot be applied: {key!r} is not a section")
         target[path[-1]] = value
-        applied.append(name)
+        applied = True
     return applied
 
 
 def load(environ=None):
+    environ = os.environ if environ is None else environ
     cfg = dict(DEFAULTS)
-    explicit = (os.environ if environ is None else environ).get("NIGHTSCOUT_PIXBAR_CONFIG")
-    for path, reader in ((explicit, json.load), (LOCAL, json.load), (CLOCK_STANDARD, None)):
-        if not path or not os.path.exists(path):
-            continue
-        if reader is None:
-            cfg.update(_from_clock_config(path))
+    cfg["_credentials_from"] = None
+    layers = (
+        (environ.get("NIGHTSCOUT_PIXBAR_CONFIG"), _read_json),
+        (LOCAL, _read_json),
+        (CLOCK_STANDARD, _read_clock_config),
+    )
+    for path, reader in layers:
+        if path and os.path.exists(path):
+            cfg.update(reader(path))
             cfg["_credentials_from"] = os.path.basename(path)
-        else:
-            with open(path, encoding="utf-8") as fh:
-                cfg.update(reader(fh))
-            cfg["_credentials_from"] = os.path.basename(path)
-        break
-    else:
-        cfg["_credentials_from"] = None
-    applied = _apply_env(cfg, environ)
-    if applied:
-        cfg["_credentials_from"] = "env" if not cfg.get("_credentials_from") \
-            else f"{cfg['_credentials_from']}+env"
-        cfg["_env_applied"] = sorted(applied)
+            break
+    if _apply_env(cfg, environ):
+        cfg["_credentials_from"] = "+".join(filter(None, (cfg["_credentials_from"], "env")))
     return cfg
 
 
@@ -126,7 +124,7 @@ def describe(cfg):
     """A loggable summary with no secrets in it."""
     dex = cfg.get("dexcom", {})
     ns = cfg.get("nightscout", {})
-    return (f"source={cfg.get('source')} units={cfg.get('units')} "
+    return (f"source={cfg.get('source')} "
             f"host={cfg.get('host')} app={cfg.get('app')} face={cfg.get('face')} "
             f"poll={cfg.get('poll_seconds')}s "
             f"creds_from={cfg.get('_credentials_from')} "
