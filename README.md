@@ -29,7 +29,41 @@ python make_mockups.py           # PNG sheets + gallery into mockups/
 Credentials are never stored here. `config.py` reads them from
 `clock-standard-config.json` (the file the TC001 clocks already use, kept
 outside every repo), or from `pixbar-config.json`, or from
-`$NIGHTSCOUT_PIXBAR_CONFIG`.
+`$NIGHTSCOUT_PIXBAR_CONFIG` — and then lets `PIXBAR_*` environment variables
+override all of it, which is how the container is configured. See `.env.example`.
+
+## Running it unattended
+
+Run from a laptop and the panel goes stale the moment the terminal closes, which
+on a glucose display reads as a calm number rather than as "no data". So the
+daemon lives on the NAS instead, beside the rest of the homelab:
+
+```bash
+# on the deploy host, once. DEPLOY is wherever that host keeps its stacks.
+DEPLOY=<deploy-dir>/pixbar
+sudo git clone https://github.com/nishanm/nightscout-pixbar "$DEPLOY"
+cd "$DEPLOY"
+sudo cp .env.example .env && sudo chmod 600 .env   # then fill it in
+sudo docker compose up -d        # sudo: .env is 600 root:root, like every stack's
+sudo docker logs -f pixbar
+
+# updating
+sudo git -C "$DEPLOY" pull
+sudo docker compose -f "$DEPLOY/compose.yaml" up -d --force-recreate
+```
+
+The bind mounts in `compose.yaml` are relative to the compose file, so the deploy
+directory can be anywhere.
+
+There is no image to build: the code is stdlib-only, so `python:3.12-alpine`
+plus a read-only bind mount of the working copy is the whole deployment.
+
+**Prefer `PIXBAR_SOURCE=nightscout` there.** The homelab's own Nightscout
+already holds this CGM history, and the Dexcom Share account is already being
+logged into by its bridge, by `insulin-api` and by three TC001 clocks — one more
+consumer is account-lock risk for no freshness gained. A wrong credential is
+also treated as fatal and backed off (5 → 30 min) rather than retried every
+minute, for the same reason.
 
 ## Layout
 
@@ -69,7 +103,9 @@ Learned by putting the first attempt on real hardware and looking at it:
   every cycle for this reason, but a device that reboots unattended shows
   anything but glucose until something re-selects the app.
 - **No alarms.** The speaker is not reachable from the push API.
-- **Needs a host.** Nothing runs on the device.
+- **Needs a host.** Nothing runs on the device. The `pixbar` container on the
+  NAS is that host; it survives a laptop session and a reboot, but the device
+  still needs something else to solve the two problems above.
 
 Together these mean this is an *integration*, not a replacement firmware. A
 native app built with Ulanzi's Flythings SDK would fix all four — the demo

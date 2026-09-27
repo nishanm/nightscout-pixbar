@@ -6,3 +6,6 @@ mockups/
 
 __pycache__/
 *.pyc
+
+# Deploy secrets. The .env used on the NAS. Never commit.
+.env

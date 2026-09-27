@@ -1,0 +1,46 @@
+# Runs daemon.py forever on a always-on host, so the panel does not go stale the
+# moment a laptop session ends. See "Running it unattended" in README.md.
+#
+# There is no Dockerfile on purpose: every module here is stdlib-only Python
+# 3.12, so the stock image plus a read-only bind mount of this working copy IS
+# the build. A code update is `git pull` + restart, with no image to rebuild.
+#
+# Every host path below is relative to this file, so the deploy directory can be
+# anywhere and nothing here names a machine.
+services:
+  pixbar:
+    image: python:3.12-alpine
+    container_name: pixbar
+    restart: unless-stopped
+    command: ["python", "-u", "daemon.py"]   # -u: no buffering, so `docker logs` is live
+    working_dir: /app
+    # Read at container CREATE, not at start. After editing .env, recreate
+    # (`up -d --force-recreate`) - a Stop+Start keeps the old values.
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"   # the mount is read-only; do not try to write .pyc
+      HOME: /tmp
+    # No WUD labels on purpose: nothing should auto-replace the image feeding a
+    # glucose display. Pin and label it yourself if you ever want that.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    volumes:
+      # The whole working copy, read-only. This includes .env - which costs
+      # nothing, because env_file has already put those same values in the
+      # container's environment where any process in it can read them anyway.
+      - .:/app:ro
+      # musl needs the zoneinfo database to honour TZ; without this the clock
+      # faces would render UTC and be hours wrong.
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

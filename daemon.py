@@ -32,6 +32,10 @@ import sources
 
 STALE_AFTER = F.STALE_MINUTES * 60
 
+# Backoff window for fatal (credential) source errors. See main().
+FATAL_BACKOFF_MIN = 300
+FATAL_BACKOFF_MAX = 1800
+
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -70,7 +74,10 @@ def error_reading(reason, minutes_ago=999):
 
 
 def cycle(cfg, source, face_fn, last_good):
+    """One poll-render-push. Returns (last_good, fatal), where fatal means the
+    source said retrying will not help - the caller backs off on that."""
     host, app = cfg["host"], cfg["app"]
+    fatal = False
     try:
         readings = source.fetch()
         if not readings:
@@ -93,8 +100,7 @@ def cycle(cfg, source, face_fn, last_good):
         else:
             reading = error_reading(exc.reason)
             face_fn = F.face_no_data
-        if exc.fatal:
-            log("credentials or config are wrong - not retrying in a tight loop")
+        fatal = exc.fatal
 
     panel = face_fn(reading)
     if panel.clipped:
@@ -107,7 +113,7 @@ def cycle(cfg, source, face_fn, last_good):
             log(f"device refused the frame: {body.strip()}")
     except Exception as exc:
         log(f"push failed: {exc}")
-    return last_good
+    return last_good, fatal
 
 
 def main():
@@ -138,12 +144,27 @@ def main():
         log(f"unknown face {cfg['face']!r}; known: {[s for s, _, _, _ in F.FACES]}")
         return 2
 
-    last_good = None
+    # A fatal source error means bad credentials, and this runs unattended for
+    # weeks: polling Dexcom Share every 60 s with a wrong password is how the
+    # account gets locked - the homelab's own runbook says so in as many words.
+    # So back off on fatal errors instead of hammering, and reset on the first
+    # good reading. Non-fatal errors - a timeout, a 500, no net - keep the normal
+    # interval, because those clear by themselves and the panel wants the retry.
+    last_good, fatal_streak = None, 0
     while True:
-        last_good = cycle(cfg, source, face_fn, last_good)
+        last_good, fatal = cycle(cfg, source, face_fn, last_good)
         if args.once:
             return 0
-        time.sleep(cfg["poll_seconds"])
+        delay = cfg["poll_seconds"]
+        if fatal:
+            fatal_streak += 1
+            delay = min(FATAL_BACKOFF_MAX,
+                        max(FATAL_BACKOFF_MIN, cfg["poll_seconds"]) * 2 ** (fatal_streak - 1))
+            log(f"credentials or config look wrong ({fatal_streak} in a row) - "
+                f"backing off {delay}s instead of retrying in a tight loop")
+        else:
+            fatal_streak = 0
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ stdlib only (urllib + ssl), so this runs anywhere Python does.
 Credentials are never held in this file. See config.py.
 """
 
+import hashlib
 import json
 import re
 import ssl
@@ -162,11 +163,20 @@ class DexcomShare:
 
 class Nightscout:
     """GET /api/v1/entries.json. Token optional; only needed if the site reads
-    are protected (src/BGSourceNightscout.cpp)."""
+    are protected (src/BGSourceNightscout.cpp).
 
-    def __init__(self, base_url, token=None):
+    `api_secret` is the other way a protected site authenticates a read, and is
+    what the homelab's own Nightscout needs: it runs AUTH_DEFAULT_ROLES=denied,
+    so an unauthenticated entries read is a 401 and no subject token exists.
+    Nightscout wants the SHA1 hex of API_SECRET in an `api-secret` header - the
+    firmware never needed this because the clocks read Dexcom directly, so this
+    is an addition to the port rather than part of it.
+    """
+
+    def __init__(self, base_url, token=None, api_secret=None):
         self.base = base_url.rstrip("/")
         self.token = token
+        self.api_secret = api_secret
 
     def fetch(self, minutes=None, max_count=None):
         minutes = minutes or BACKFILL_SECONDS // 60
@@ -175,7 +185,12 @@ class Nightscout:
         if self.token:
             url += "&token=" + urllib.parse.quote(self.token)
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "nightscout-pixbar"})
+            headers = {"User-Agent": "nightscout-pixbar"}
+            if self.api_secret:
+                # Hashed here, never logged: the plain secret must not leave .env.
+                headers["api-secret"] = hashlib.sha1(
+                    self.api_secret.encode()).hexdigest()
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15,
                                         context=ssl.create_default_context()) as r:
                 raw = json.loads(r.read().decode())
@@ -203,7 +218,8 @@ def build(config):
                            creds.get("server", "us"))
     if kind == "nightscout":
         creds = config.get("nightscout", {})
-        return Nightscout(creds.get("url", ""), creds.get("token"))
+        return Nightscout(creds.get("url", ""), creds.get("token"),
+                          creds.get("api_secret"))
     raise SourceError(f"unknown source {kind!r}", "CONFIG", fatal=True)
 
 
