@@ -1,0 +1,8 @@
+# Holds Dexcom credentials. Never commit.
+pixbar-config.json
+
+# Generated review artefacts, rebuilt by make_mockups.py
+mockups/
+
+__pycache__/
+*.pyc
