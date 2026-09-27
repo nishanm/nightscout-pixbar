@@ -13,15 +13,21 @@ Two behaviours exist because of things measured on the hardware, not guessed:
   freezes on an old number is worse than one that says it has no data, because
   a stale reading still looks like a reading.
 
-Still unsolved, and not solvable from here: nothing in the device API can bring
-an app on screen (verified on 1.0.8 and 1.1.3), so if the knob is turned away
-this keeps updating a page nobody is looking at.
+* **The app is brought on screen after it is (re)created.** `POST
+  /api/switchDiyApp?name=<app>` exists on firmware 1.1.0+ (Ulanzi's own
+  protocol doc; measured 200 on 1.1.3 on 2026-09-27 - the earlier "it does not
+  exist" finding had probed it with GET, which 404s). So a device that reboots
+  overnight gets its glucose page back by itself instead of sitting on the
+  weather. It is NOT re-asserted every cycle by default, because that would
+  fight the knob; PIXBAR_PIN_SECONDS=<n> opts into re-asserting every n seconds
+  for a display nobody is meant to turn away from.
 """
 
 import argparse
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 import config as C
@@ -39,6 +45,20 @@ FATAL_BACKOFF_MAX = 1800
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def switch_to(host, app):
+    """Ask the device to show our custom app. POST, not GET: the GET form 404s
+    and is what made this look impossible for a day. Returns the device's reply
+    text, or the error, and never raises - losing the switch must not lose the
+    frame."""
+    url = f"http://{host}/api/switchDiyApp?name={urllib.parse.quote(app)}"
+    req = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.read().decode(errors="replace").strip()
+    except Exception as exc:
+        return f"switch failed: {exc}"
 
 
 def app_exists(host, app):
@@ -105,12 +125,17 @@ def cycle(cfg, source, face_fn, last_good):
     panel = face_fn(reading)
     if panel.clipped:
         log(f"WARNING: {panel.clipped} pixels drawn off-panel (run audit.py)")
-    if not app_exists(host, app):
+    missing = not app_exists(host, app)
+    if missing:
         log(f"custom app {app!r} was missing - re-creating it (device restart?)")
     try:
         ms, size, body = push.send_panel(host, app, panel, duration=300)
         if '"code":200' not in body:
             log(f"device refused the frame: {body.strip()}")
+        elif missing:
+            # It exists again; now put it on screen, or the reboot leaves the
+            # panel on whatever app the device woke up showing.
+            log(f"switch to {app!r}: {switch_to(host, app)}")
     except Exception as exc:
         log(f"push failed: {exc}")
     return last_good, fatal
@@ -122,6 +147,8 @@ def main():
     ap.add_argument("--face")
     ap.add_argument("--host")
     ap.add_argument("--poll", type=int)
+    ap.add_argument("--switch", action="store_true",
+                    help="bring the app on screen at start (always done after a re-create)")
     args = ap.parse_args()
 
     cfg = C.load()
@@ -151,8 +178,15 @@ def main():
     # good reading. Non-fatal errors - a timeout, a 500, no net - keep the normal
     # interval, because those clear by themselves and the panel wants the retry.
     last_good, fatal_streak = None, 0
+    pin, last_pin = int(cfg.get("pin_seconds") or 0), 0.0
+    if args.switch or pin:
+        log(f"switch to {cfg['app']!r}: {switch_to(cfg['host'], cfg['app'])}")
+        last_pin = time.time()
     while True:
         last_good, fatal = cycle(cfg, source, face_fn, last_good)
+        if pin and time.time() - last_pin >= pin:
+            log(f"pin: switch to {cfg['app']!r}: {switch_to(cfg['host'], cfg['app'])}")
+            last_pin = time.time()
         if args.once:
             return 0
         delay = cfg["poll_seconds"]

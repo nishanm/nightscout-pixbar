@@ -95,20 +95,23 @@ Learned by putting the first attempt on real hardware and looking at it:
 
 ## Known limits
 
-- **Nothing can bring the app on screen.** `switchDiyApp` / `switchApp` do not
-  exist — verified on firmware 1.0.8 *and* 1.1.3, with the app present. The
-  vendor's docs say a custom app renders only while it is displayed, so the
-  face has to be selected with the knob.
-- **A restart clears custom apps.** Measured. `daemon.py` re-creates its app
-  every cycle for this reason, but a device that reboots unattended shows
-  anything but glucose until something re-selects the app.
+- **A restart clears custom apps.** Measured. `daemon.py` checks every cycle,
+  re-creates its app when it is gone, and then calls
+  `POST /api/switchDiyApp?name=<app>` to put it back on screen (firmware
+  1.1.0+, in Ulanzi's own protocol doc; measured on 1.1.3). An earlier claim
+  here that no such endpoint existed came from probing it with GET, which
+  404s. Set `PIXBAR_PIN_SECONDS` to re-assert it on a timer if the panel must
+  never be left on another app; off by default so the knob still works.
+- **Custom apps are not in the device carousel** (Ulanzi issue #22), so a
+  custom app stays up only until the knob moves or the carousel timer fires.
+  Leave `carouselSpeed` at 0 on the device.
 - **No alarms.** The speaker is not reachable from the push API.
 - **Needs a host.** Nothing runs on the device. The `pixbar` container on the
   NAS is that host; it survives a laptop session and a reboot, but the device
   still needs something else to solve the two problems above.
 
 Together these mean this is an *integration*, not a replacement firmware. A
-native app built with Ulanzi's Flythings SDK would fix all four — the demo
+native app built with Ulanzi's Flythings SDK would fix the rest — the demo
 project exposes the panel, the knob, the buttons and the speaker, and their
 repo already contains a merged third-party native app. Whether it can do TLS
 (and so reach Dexcom directly) is the open question.

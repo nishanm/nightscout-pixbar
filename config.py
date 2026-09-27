@@ -34,6 +34,7 @@ DEFAULTS = {
     "poll_seconds": 60,        # cheap; the source itself only moves every 5 min
     "source": "dexcom",
     "units": "mgdl",
+    "pin_seconds": 0,          # >0: re-assert switchDiyApp every n s (fights the knob; opt-in)
 }
 
 # env var -> (config key path, coercion). Flat keys and nested credential keys.
@@ -44,6 +45,7 @@ ENV_MAP = {
     "PIXBAR_POLL_SECONDS": (("poll_seconds",), int),
     "PIXBAR_SOURCE": (("source",), str),
     "PIXBAR_UNITS": (("units",), str),
+    "PIXBAR_PIN_SECONDS": (("pin_seconds",), int),
     "PIXBAR_DEXCOM_USERNAME": (("dexcom", "username"), str),
     "PIXBAR_DEXCOM_PASSWORD": (("dexcom", "password"), str),
     "PIXBAR_DEXCOM_SERVER": (("dexcom", "server"), str),
