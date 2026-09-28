@@ -79,7 +79,17 @@ def trend_mark(panel, x, y, trend, color, w=9, h=15):
             panel.rect(x + i, yy, 2, 2, color)
         head_y = y if slope > 0 else y + h - 2
         panel.rect(x + w - 6, head_y, 6, 2, color)
-        panel.rect(x + w - 2, head_y if slope > 0 else head_y - 4, 2, 6, color)
+        # The stroke always starts at the box edge, same as the cap, but its
+        # length used to be a fixed 6px - fine when span reaches h - 1, but a
+        # box far taller than wide (hero-delta's 7x15) caps span at w - 1,
+        # stranding a fixed-length stroke rows short of the last block it's
+        # meant to meet (face_hero_delta/rising-45 in the photo). Stretch it
+        # to always reach, instead of leaving a floating, disconnected head.
+        last_yy = y + (h - 1 - span) if slope > 0 else y + span - 1
+        reach = abs(last_yy - head_y) + 2
+        stroke_len = max(6, reach)
+        stroke_y = head_y if slope > 0 else head_y - stroke_len + 2
+        panel.rect(x + w - 2, stroke_y, 2, stroke_len, color)
         return
     count = 2 if trend in ("DOUBLE_UP", "DOUBLE_DOWN") else 1
     stem = x + w // 2 - 1

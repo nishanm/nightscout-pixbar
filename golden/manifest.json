@@ -2468,8 +2468,8 @@
    "file": "hero-delta--rising-45.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "f19e286981d40f7a7ba1f604f7a1a075266ee37271e8c82582ac3bef806090ab",
-   "lit_pixels": 187,
+   "sha256_rgb888": "693d6f266ad69710e54af38b9ca2ca94abadd920aa9caf8866f43be7f3d3382b",
+   "lit_pixels": 191,
    "clipped": 0,
    "inputs": {
     "sgv": 152,
@@ -2632,8 +2632,8 @@
    "file": "hero-delta--falling-45.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "55f32e844de60c2fe1a0860a94685e7f08e45d99acf34fd267648bfd8a21ac39",
-   "lit_pixels": 185,
+   "sha256_rgb888": "35f31d0f4be45193897826117553766b2e9ea234b92735c17487c12cd5d94638",
+   "lit_pixels": 189,
    "clipped": 0,
    "inputs": {
     "sgv": 88,
