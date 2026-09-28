@@ -147,14 +147,15 @@ TINY_H = 5
 
 
 def tiny(panel, x, y, text, color):
-    """Top-left anchored 3x5 text. Returns the x of the last lit column."""
+    """Top-left anchored 3x5 text. Returns the x of the last lit column (the
+    caller adds its own gap; the trailing 1 px advance is not part of the ink)."""
     for ch in text.upper():
         g = _T.get(ch)
         if g is None:
             continue
         panel.blit(x, y, g, color)
         x += len(g[0]) + 1
-    return x - 1
+    return x - 2
 
 
 # ------------------------------------------------- real pixel fonts (Spleen)

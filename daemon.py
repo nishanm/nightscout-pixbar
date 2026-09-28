@@ -25,6 +25,7 @@ Behaviours that exist because of things measured on the hardware, not guessed:
 import argparse
 import sys
 import time
+import traceback
 
 import config as C
 import faces as F
@@ -40,21 +41,24 @@ def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
-def face_for(configured, reading, source_ok):
-    """Which face draws this reading. The configured one, except that a reading
-    the source can no longer refresh degrades to the explicit no-data face once
-    it is stale - a grey `---` on the hero face says less than `? 27M`."""
-    if not source_ok and reading.stale:
-        return F.face_no_data
-    return configured
+def face_for(configured, reading):
+    """Which face draws this reading. The configured one until the reading is
+    stale - however it got stale: source down, uploader stopped, sensor in
+    warm-up - then the explicit no-data face, because a grey `---` on the hero
+    face says less than `? 27M`. Staleness is a property of the reading, not
+    of the transport."""
+    return F.face_no_data if reading.stale else configured
 
 
-def cycle(cfg, source, dev, configured_face, last_samples):
+def cycle(cfg, source, dev, configured_face, last_samples, ask_source=True):
     """One poll-render-push. Returns (last_samples, fatal); fatal means the
-    source said retrying will not help, and the caller backs off."""
+    source said retrying will not help, and the caller backs off the SOURCE
+    while this keeps running every period, so the panel keeps ageing."""
     now = time.time()
-    fatal, source_ok = False, True
+    fatal = False
     try:
+        if not ask_source:
+            raise sources.SourceError("source in backoff", "BACKOFF")
         samples = source.fetch()
         if not samples:
             raise sources.SourceError("source returned no readings", "NO DATA")
@@ -64,14 +68,15 @@ def cycle(cfg, source, dev, configured_face, last_samples):
             f"age={reading.minutes_ago}m points={len(samples)} "
             f"[{'stale' if reading.stale else 'ok'}]")
     except sources.SourceError as exc:
-        log(f"source error: {exc} ({exc.reason}){' FATAL' if exc.fatal else ''}")
-        fatal, source_ok = exc.fatal, False
+        if exc.reason != "BACKOFF":
+            log(f"source error: {exc} ({exc.reason}){' FATAL' if exc.fatal else ''}")
+        fatal = exc.fatal
         if last_samples:
             reading = Reading.from_samples(last_samples, now)   # same data, older
         else:
             reading = Reading(0, "NONE", None, 999, time.strftime("%H:%M"), [], now=now)
 
-    panel = face_for(configured_face, reading, source_ok)(reading)
+    panel = face_for(configured_face, reading)(reading)
     if panel.clipped:
         log(f"WARNING: {panel.clipped} pixels drawn off-panel (run audit.py)")
 
@@ -128,29 +133,36 @@ def main():
         except DeviceError as exc:
             log(f"{why}: switch failed: {exc}")
 
-    last_samples, fatal_streak, last_pin = None, 0, 0.0
+    last_samples, fatal_streak, last_pin, source_ok_after = None, 0, 0.0, 0.0
     if args.switch or pin:
         switch("start")
         last_pin = time.time()
     while True:
         started = time.time()
-        last_samples, fatal = cycle(cfg, source, dev, face.fn, last_samples)
-        if pin and time.time() - last_pin >= pin:
-            switch("pin")
-            last_pin = time.time()
+        try:
+            last_samples, fatal = cycle(cfg, source, dev, face.fn, last_samples,
+                                        ask_source=started >= source_ok_after)
+            if pin and time.time() - last_pin >= pin:
+                switch("pin")
+                last_pin = time.time()
+        except Exception:  # noqa: BLE001 - a daemon that dies leaves a live-looking number up
+            log("cycle crashed; continuing:\n" + traceback.format_exc().rstrip())
+            fatal = False
         if args.once:
             return 0
-        delay = period
+        # The panel is re-rendered EVERY period so a reading keeps ageing into
+        # the stale face; only the source call is held back after a fatal error.
         if fatal:
             fatal_streak += 1
-            delay = min(FATAL_BACKOFF_MAX, max(FATAL_BACKOFF_MIN, period) * 2 ** (fatal_streak - 1))
+            hold = min(FATAL_BACKOFF_MAX, max(FATAL_BACKOFF_MIN, period) * 2 ** (fatal_streak - 1))
+            source_ok_after = time.time() + hold
             log(f"credentials or config look wrong ({fatal_streak} in a row) - "
-                f"backing off {delay}s instead of retrying in a tight loop")
-        else:
+                f"not asking the source again for {hold}s")
+        elif started >= source_ok_after:
             fatal_streak = 0
         # Deadline, not "sleep after the work": the period is the period, not
         # the period plus however long the network took this time.
-        time.sleep(max(0.0, delay - (time.time() - started)))
+        time.sleep(max(0.0, period - (time.time() - started)))
 
 
 if __name__ == "__main__":

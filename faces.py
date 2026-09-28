@@ -69,7 +69,11 @@ def trend_mark(panel, x, y, trend, color, w=9, h=15):
             panel.rect(x + w - 3 + i, mid - 2 + i, 1, 5 - 2 * i, color)
         return
     if abs(slope) == 1:
-        span = min(w, h)
+        # 2x2 blocks along the diagonal: the last block reaches column x + span
+        # and row y + span, so the run is one shorter than the box in BOTH axes
+        # or it spills (the 6-row clock box lost a corner; the hero face put a
+        # block in column 51).
+        span = min(w - 1, h - 1)
         for i in range(span):
             yy = y + (h - 2 - i) if slope > 0 else y + i
             panel.rect(x + i, yy, 2, 2, color)
@@ -92,25 +96,30 @@ def trend_mark(panel, x, y, trend, color, w=9, h=15):
 # ------------------------------------------------------------------------ graph
 def _bands(top, bottom):
     """Fixed row ranges per band, like BGDisplayFaceGraphBase.cpp: the reader sees
-    "in the red zone" without reading an axis."""
+    "in the red zone" without reading an axis. Keyed by the same names model.band
+    uses, so a point is always plotted in the zone it is coloured for."""
     h = bottom - top + 1
     urgent = 1 if h < 10 else 2
     warn = 1 if h < 8 else 2
-    return [
-        (URGENT_HIGH, 10**6, top, top + urgent - 1),
-        (WARN_HIGH, URGENT_HIGH, top + urgent, top + urgent + warn - 1),
-        (WARN_LOW, WARN_HIGH, top + urgent + warn, bottom - urgent - warn),
-        (URGENT_LOW, WARN_LOW, bottom - urgent - warn + 1, bottom - urgent),
-        (0, URGENT_LOW, bottom - urgent + 1, bottom),
-    ]
+    return {
+        "urgent-high": (URGENT_HIGH, 10**6, top, top + urgent - 1),
+        "warning-high": (WARN_HIGH, URGENT_HIGH, top + urgent, top + urgent + warn - 1),
+        "normal": (WARN_LOW, WARN_HIGH, top + urgent + warn, bottom - urgent - warn),
+        "warning-low": (URGENT_LOW, WARN_LOW, bottom - urgent - warn + 1, bottom - urgent),
+        "urgent-low": (0, URGENT_LOW, bottom - urgent + 1, bottom),
+    }
 
 
-def row_for(sgv, bands, bottom):
-    for lo, hi, first, last in bands:
-        if lo <= sgv < hi:
-            frac = min(1.0, max(0.0, (sgv - lo) / max(1, hi - lo)))
-            return int(round(last - frac * (last - first)))
-    return bottom
+def _zone(sgv):
+    """model.band, split into its high and low halves for the graph."""
+    b = band(sgv)
+    return b if b == "normal" else f"{b}-{'high' if sgv > WARN_HIGH else 'low'}"
+
+
+def row_for(sgv, bands):
+    lo, hi, first, last = bands[_zone(sgv)]
+    frac = min(1.0, max(0.0, (sgv - lo) / max(1, hi - lo)))
+    return int(round(last - frac * (last - first)))
 
 
 def draw_graph(panel, x, y, w, h, history, rails=True, span_minutes=180, now=None):
@@ -124,7 +133,7 @@ def draw_graph(panel, x, y, w, h, history, rails=True, span_minutes=180, now=Non
         # The in-range band gets a dim floor and ceiling so the trace has a frame
         # of reference. Marking the urgent rows instead (first pass) painted red
         # across a perfectly healthy panel.
-        _, _, in_first, in_last = bands[2]
+        _, _, in_first, in_last = bands["normal"]
         rail = R.dim(R.WHITE, 34)
         for gx in range(x, x + w, 3):
             panel.set(gx, in_first, rail)
@@ -134,7 +143,7 @@ def draw_graph(panel, x, y, w, h, history, rails=True, span_minutes=180, now=Non
         if age_minutes < 0 or age_minutes > span_minutes:
             continue
         col = x + w - 1 - int(round(age_minutes / span_minutes * (w - 1)))
-        panel.set(col, row_for(sgv, bands, bottom), color_for(sgv))
+        panel.set(col, row_for(sgv, bands), color_for(sgv))
 
 
 def age_pips(panel, x, y, minutes_ago, color, count=4, gap=2):
@@ -272,13 +281,18 @@ def _history(base, drift, now, n=36, jitter=(0, 3, -2, 5, -4, 2, -1, 4), newest_
     return out
 
 
-STATE_NAMES = ["in-range", "warn-high", "urgent-high", "warn-low", "urgent-low", "stale"]
+STATE_NAMES = ["in-range", "warn-high", "urgent-high", "warn-low", "urgent-low", "stale",
+               "rising-45", "falling-45", "no-trend"]
 
 
 def demo_states(now=None):
-    """The six readings every face is judged in, as of `now` (default: the
-    wall clock). Pass a fixed `now` for a reproducible corpus - the histories
-    and the graphs both hang off it, so one value pins everything."""
+    """The readings every face is judged in, as of `now` (default: the wall
+    clock). Pass a fixed `now` for a reproducible corpus - the histories and the
+    graphs both hang off it, so one value pins everything.
+
+    The last three exist so the audit and the goldens cover every trend mark
+    (the 45-degree diagonals once clipped a 6-row box unnoticed because no demo
+    state drew one) and the delta-unknown `?`, which is a live state."""
     now = _time.time() if now is None else now
 
     def r(sgv, trend, delta, minutes_ago, clock, drift, cut=None):
@@ -292,6 +306,9 @@ def demo_states(now=None):
         ("warn-low", r(66, "SINGLE_DOWN", -9, 3, "03:41", -0.8)),
         ("urgent-low", r(48, "DOUBLE_DOWN", -15, 2, "03:58", -1.4)),
         ("stale", r(104, "FLAT", 0, 27, "07:12", 0.1, cut=-5)),
+        ("rising-45", r(152, "FORTY_FIVE_UP", 6, 1, "09:05", 0.5)),
+        ("falling-45", r(88, "FORTY_FIVE_DOWN", None, 6, "17:48", -0.4)),
+        ("no-trend", r(131, "NONE", None, 3, "12:00", 0.0)),
     ]
 
 

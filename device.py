@@ -17,6 +17,7 @@ Replies are parsed, not sniffed: the device answers `{"code":200,...}` on
 success, and callers get that dict.
 """
 
+import http.client
 import json
 import time
 import urllib.parse
@@ -56,7 +57,9 @@ class Device:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 text = resp.read().decode(errors="replace")
-        except OSError as exc:  # URLError, timeout, connection refused
+        # URLError/timeout/refused are OSErrors; a reply cut off mid-body by the
+        # device's small HTTP server is an HTTPException, which is NOT one.
+        except (OSError, http.client.HTTPException) as exc:
             raise DeviceError(f"{req.get_method()} {path}: {exc}") from exc
         ms = (time.perf_counter() - started) * 1000
         try:

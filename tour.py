@@ -12,7 +12,7 @@ import time
 
 import config as C
 import faces as F
-from device import Device
+from device import Device, DeviceError
 
 DWELL = 15
 
@@ -52,11 +52,16 @@ def main():
         print("--- part 4: the stale face at the lowest brightness", flush=True)
         show(dev, "stale @ low", hero_delta(F.state("stale")))
     finally:
-        restored = dev.set_brightness(started_level)
-        dev.send_panel(hero_delta(F.state("in-range")), duration=600)
-        stamp(f"restored brightness to {restored} (was {started_level}); hero-delta/in-range left on screen")
-        if restored != started_level:
-            print("WARNING: brightness did not restore", file=sys.stderr)
+        # Guarded: if the device is what failed, the restore fails too, and that
+        # must be reported beside the original error rather than replace it.
+        try:
+            restored = dev.set_brightness(started_level)
+            dev.send_panel(hero_delta(F.state("in-range")), duration=600)
+            stamp(f"restored brightness to {restored} (was {started_level}); hero-delta/in-range left on screen")
+            if restored != started_level:
+                print("WARNING: brightness did not restore", file=sys.stderr)
+        except DeviceError as exc:
+            print(f"WARNING: could not restore brightness {started_level!r}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

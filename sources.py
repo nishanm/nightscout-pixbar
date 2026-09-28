@@ -11,6 +11,7 @@ Credentials are never held in this file. See config.py.
 """
 
 import hashlib
+import http.client
 import json
 import re
 import ssl
@@ -19,6 +20,19 @@ import urllib.parse
 import urllib.request
 
 from model import Sample
+
+# Everything a fetch can raise that is the network's fault rather than ours.
+# HTTPException (a reply cut off mid-body, a bad status line) is not an OSError.
+_TRANSPORT_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
+# ...and what a reply can raise when it is not the JSON we were promised.
+_SHAPE_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
+
+# Dexcom Share puts the reason in the body of a 500. Anything from the SSO
+# family means the login itself is wrong or already locked - retrying will not
+# help and, on a shared account, actively hurts.
+_DEXCOM_FATAL = ("AccountPasswordInvalid", "SSO_AuthenticateAccountNotFound",
+                 "SSO_AuthenticatePasswordInvalid", "SSO_AuthenticateMaxAttemptsExceeed",
+                 "SSO_AuthenticateMaxAttemptsExceeded", "SSO_InternalError")
 
 # One CA store, loaded once: create_default_context() parses the system
 # certificates every time it is called (~11 ms), and nothing about them changes
@@ -136,27 +150,31 @@ class DexcomShare:
             raw = _post_json(url, {})
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
-            if "AccountPasswordInvalid" in detail or "SSO_AuthenticateAccountNotFound" in detail:
+            if any(marker in detail for marker in _DEXCOM_FATAL):
                 raise SourceError("Dexcom rejected the credentials", "BAD LOGIN", fatal=True)
             if "Session" in detail and _retry:
                 self.session_id = None
                 return self.fetch(_retry=False)
             raise SourceError(f"Dexcom HTTP {exc.code}", "HTTP")
-        except (urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
+        except _TRANSPORT_ERRORS as exc:
             raise SourceError(f"Dexcom unreachable: {exc}", "NO NET")
+        except _SHAPE_ERRORS as exc:
+            raise SourceError(f"Dexcom reply unreadable: {exc}", "BAD DATA")
 
         if not isinstance(raw, list):
             raise SourceError("Dexcom response was not an array", "BAD DATA")
         readings = []
-        for item in raw:
-            # "ST" looks like /Date(1703182152000)/ - the firmware trims 5 off the
-            # front and 4 off the back (BGSourceDexcom.cpp:159-163).
-            match = re.search(r"(\d{10,13})", str(item.get("ST", "")))
-            if not match:
-                continue
-            readings.append(Sample(int(match.group(1)) // 1000,
-                                   item.get("Value", 0),
-                                   parse_trend(item.get("Trend"))))
+        try:
+            for item in raw:
+                # "ST" looks like /Date(1703182152000)/ - the firmware trims 5 off
+                # the front and 4 off the back (BGSourceDexcom.cpp:159-163).
+                match = re.search(r"(\d{10,13})", str(item.get("ST", "")))
+                if not match or item.get("Value") is None:
+                    continue
+                readings.append(Sample(int(match.group(1)) // 1000, item["Value"],
+                                       parse_trend(item.get("Trend"))))
+        except _SHAPE_ERRORS as exc:
+            raise SourceError(f"Dexcom reading unreadable: {exc}", "BAD DATA")
         readings.sort(key=lambda r: r.epoch)
         return readings
 
@@ -180,7 +198,10 @@ class Nightscout:
 
     def fetch(self):
         _, count = _window()
-        url = f"{self.base}/api/v1/entries.json?count={count}"
+        # find[type]=sgv: `count` counts every entry type, and a site with meter
+        # readings or calibrations in the window would otherwise hand back a
+        # short glucose history with gaps at the left of the graph.
+        url = f"{self.base}/api/v1/entries.json?count={count}&find[type]=sgv"
         if self.token:
             url += "&token=" + urllib.parse.quote(self.token)
         try:
@@ -195,15 +216,23 @@ class Nightscout:
         except urllib.error.HTTPError as exc:
             raise SourceError(f"Nightscout HTTP {exc.code}", "HTTP",
                               fatal=exc.code in (401, 403))
-        except (urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
+        except _TRANSPORT_ERRORS as exc:
             raise SourceError(f"Nightscout unreachable: {exc}", "NO NET")
+        except _SHAPE_ERRORS as exc:
+            # A reverse proxy's HTML maintenance page is a 200 that is not JSON.
+            raise SourceError(f"Nightscout reply unreadable: {exc}", "BAD DATA")
 
         readings = []
-        for item in raw or []:
-            if "sgv" not in item:
-                continue
-            epoch = int(item.get("date", 0)) // 1000 or int(item.get("mills", 0)) // 1000
-            readings.append(Sample(epoch, item["sgv"], parse_trend(item.get("direction"))))
+        try:
+            for item in raw or []:
+                if not isinstance(item, dict) or item.get("sgv") is None:
+                    continue
+                epoch = int(item.get("date") or 0) // 1000 or int(item.get("mills") or 0) // 1000
+                if not epoch:
+                    continue
+                readings.append(Sample(epoch, item["sgv"], parse_trend(item.get("direction"))))
+        except _SHAPE_ERRORS as exc:
+            raise SourceError(f"Nightscout entry unreadable: {exc}", "BAD DATA")
         readings.sort(key=lambda r: r.epoch)
         return readings
 

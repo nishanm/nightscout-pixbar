@@ -105,8 +105,13 @@ def load(environ=None):
     environ = os.environ if environ is None else environ
     cfg = dict(DEFAULTS)
     cfg["_credentials_from"] = None
+    explicit = environ.get("NIGHTSCOUT_PIXBAR_CONFIG")
+    if explicit and not os.path.exists(explicit):
+        # A named file that is missing must not fall through to some other
+        # account's credentials in silence.
+        raise FileNotFoundError(f"NIGHTSCOUT_PIXBAR_CONFIG={explicit!r} does not exist")
     layers = (
-        (environ.get("NIGHTSCOUT_PIXBAR_CONFIG"), _read_json),
+        (explicit, _read_json),
         (LOCAL, _read_json),
         (CLOCK_STANDARD, _read_clock_config),
     )
