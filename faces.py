@@ -235,9 +235,12 @@ def face_no_data(r):
     """Not a blank value - a statement, with how long it has been that way."""
     p = R.Panel()
     # Two stacked 8-row lines exactly fill 16 rows, so they touch and read as
-    # mush. The red "?" already says "no reading"; the only other fact worth
-    # the space is how long, so it gets one line at a size that can be read.
-    R.font_text(p, PAD, (16 - R.font_height(R.HERO, "?")) // 2, "?", R.HERO, R.BG_URGENT)
+    # mush. The "?" already says "no reading"; the only other fact worth the
+    # space is how long, so it gets one line at a size that can be read. The
+    # "?" is the STALE colour, not red: red is a glucose state on every face,
+    # and "no data" is not a glucose state (the TC001 rule: NO DATA is drawn
+    # in the old-data colour).
+    R.font_text(p, PAD, (16 - R.font_height(R.HERO, "?")) // 2, "?", R.HERO, R.GRAY)
     label = f"{r.minutes_ago}M"
     R.font_text_right(p, 51 - PAD, (16 - R.font_height(R.MID, label)) // 2, label,
                       R.MID, R.dim(R.WHITE, 150))

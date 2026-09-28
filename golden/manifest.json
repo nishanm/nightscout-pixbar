@@ -7328,7 +7328,7 @@
    "file": "no-data--in-range.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "f347df9135c2d259247fd7683db71bdde707eba145317da51ba52a508115bc40",
+   "sha256_rgb888": "74deb56f10fbe8bf870af28be097be604d1d0ccc8048df61e6dc2fee147c945f",
    "lit_pixels": 112,
    "clipped": 0,
    "inputs": {
@@ -7492,7 +7492,7 @@
    "file": "no-data--warn-high.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "d34aca514150d4c15949a16f3b05d91710d21f1eb3b8072a78ca722e78a4f3ca",
+   "sha256_rgb888": "07846c6a601dcae7b839e10300a500cdd2fdfc9f3724b28f4834f458d0133e29",
    "lit_pixels": 113,
    "clipped": 0,
    "inputs": {
@@ -7656,7 +7656,7 @@
    "file": "no-data--urgent-high.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "a850a91bcef0966e51f5f4ecb9aed1d5461c4622ef41241228107c2f36fe31a0",
+   "sha256_rgb888": "a7344ad48bdd1c2264643ee7dc1fc3d86e9645d3441796fa654dc34ad5937b31",
    "lit_pixels": 112,
    "clipped": 0,
    "inputs": {
@@ -7820,7 +7820,7 @@
    "file": "no-data--warn-low.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "f347df9135c2d259247fd7683db71bdde707eba145317da51ba52a508115bc40",
+   "sha256_rgb888": "74deb56f10fbe8bf870af28be097be604d1d0ccc8048df61e6dc2fee147c945f",
    "lit_pixels": 112,
    "clipped": 0,
    "inputs": {
@@ -7984,7 +7984,7 @@
    "file": "no-data--urgent-low.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "a850a91bcef0966e51f5f4ecb9aed1d5461c4622ef41241228107c2f36fe31a0",
+   "sha256_rgb888": "a7344ad48bdd1c2264643ee7dc1fc3d86e9645d3441796fa654dc34ad5937b31",
    "lit_pixels": 112,
    "clipped": 0,
    "inputs": {
@@ -8148,7 +8148,7 @@
    "file": "no-data--stale.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "09a1b64b5b74b2d19533ac2725d86b99a6ecaf39b04838bd33ec4ed8720aac3f",
+   "sha256_rgb888": "e0446a000c51875858e31f757127077ec548d0c602036ec07f572c38dd1a86c5",
    "lit_pixels": 139,
    "clipped": 0,
    "inputs": {
@@ -8292,7 +8292,7 @@
    "file": "no-data--rising-45.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "fb47d9bc8878c3b5e514d41708c06681e790d22cde3a8bdcc0ff4743a9f90922",
+   "sha256_rgb888": "37725a7ad55f0a2f9097678430cdbfdeab0cedc3a632159775de7055892bf7f7",
    "lit_pixels": 108,
    "clipped": 0,
    "inputs": {
@@ -8456,7 +8456,7 @@
    "file": "no-data--falling-45.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "fdf688518a1cd1fcb8fc9163c1138bcbd141e6e12b21c36de6178a51a4f622ff",
+   "sha256_rgb888": "df2fe2ec6f37ad05c8d10a6dffc1597b42484de961e09583dbf4ef98bf284dc1",
    "lit_pixels": 120,
    "clipped": 0,
    "inputs": {
@@ -8620,7 +8620,7 @@
    "file": "no-data--no-trend.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "f347df9135c2d259247fd7683db71bdde707eba145317da51ba52a508115bc40",
+   "sha256_rgb888": "74deb56f10fbe8bf870af28be097be604d1d0ccc8048df61e6dc2fee147c945f",
    "lit_pixels": 112,
    "clipped": 0,
    "inputs": {
