@@ -26,6 +26,9 @@ import urllib.request
 import render as R
 
 TIMEOUT = 5
+# The device answers in a few hundred bytes. The API is unauthenticated on a
+# LAN, so a reply is read with a ceiling rather than trusted to end.
+MAX_REPLY = 64 * 1024
 
 
 class DeviceError(Exception):
@@ -56,7 +59,9 @@ class Device:
         started = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                text = resp.read().decode(errors="replace")
+                text = resp.read(MAX_REPLY + 1).decode(errors="replace")
+                if len(text) > MAX_REPLY:
+                    raise DeviceError(f"{req.get_method()} {path}: reply larger than {MAX_REPLY} bytes")
         # URLError/timeout/refused are OSErrors; a reply cut off mid-body by the
         # device's small HTTP server is an HTTPException, which is NOT one.
         except (OSError, http.client.HTTPException) as exc:

@@ -21,6 +21,18 @@ import urllib.request
 
 from model import Sample
 
+# Three hours of readings is a few kilobytes. A reply is read with a ceiling so
+# a misconfigured URL that points at something large cannot fill the container.
+MAX_REPLY = 4 * 1024 * 1024
+
+
+def _read(resp):
+    body = resp.read(MAX_REPLY + 1)
+    if len(body) > MAX_REPLY:
+        raise SourceError(f"reply larger than {MAX_REPLY} bytes", "BAD DATA")
+    return body.decode()
+
+
 # Everything a fetch can raise that is the network's fault rather than ours.
 # HTTPException (a reply cut off mid-body, a bad status line) is not an OSError.
 _TRANSPORT_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
@@ -109,7 +121,7 @@ def _post_json(url, payload, timeout=15):
         "User-Agent": "nightscout-pixbar",
     })
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:
-        return json.loads(r.read().decode() or "null")
+        return json.loads(_read(r) or "null")
 
 
 class DexcomShare:
@@ -149,7 +161,7 @@ class DexcomShare:
                    f"&minutes={minutes}&maxCount={max_count}")
             raw = _post_json(url, {})
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
+            detail = exc.read(MAX_REPLY).decode(errors="replace")
             if any(marker in detail for marker in _DEXCOM_FATAL):
                 raise SourceError("Dexcom rejected the credentials", "BAD LOGIN", fatal=True)
             if "Session" in detail and _retry:
@@ -212,7 +224,7 @@ class Nightscout:
                     self.api_secret.encode()).hexdigest()
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15, context=_SSL) as r:
-                raw = json.loads(r.read().decode())
+                raw = json.loads(_read(r))
         except urllib.error.HTTPError as exc:
             raise SourceError(f"Nightscout HTTP {exc.code}", "HTTP",
                               fatal=exc.code in (401, 403))

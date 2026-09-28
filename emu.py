@@ -52,13 +52,13 @@ def reading_from(q):
     empty delta means "unknown" - the state the faces draw as `?`."""
     states = dict(F.demo_states())
     base = states.get(q.get("state", ["in-range"])[0], states["in-range"])
-    sgv = int(q.get("sgv", [base.sgv])[0])
+    sgv = _clamp(q.get("sgv", [base.sgv])[0], 1, 999)
     delta = q.get("delta", [base.delta])[0]
     return F.Reading(
         sgv=sgv,
         trend=q.get("trend", [base.trend])[0],
-        delta=None if delta in (None, "", "?") else int(delta),
-        minutes_ago=int(q.get("mins", [base.minutes_ago])[0]),
+        delta=None if delta in (None, "", "?") else _clamp(delta, -999, 999),
+        minutes_ago=_clamp(q.get("mins", [base.minutes_ago])[0], 0, 9999),
         time=q.get("time", [base.time])[0],
         # keep the demo timeline, retarget its newest point at the slider value
         history=(base.history[:-1] + [(base.history[-1][0], sgv)]) if base.history else [],
@@ -69,8 +69,14 @@ def reading_from(q):
 def panel_for(q):
     face = F.face(q.get("face", [F.SLUGS[0]])[0]) or F.FACES[0]
     panel = face.fn(reading_from(q))
-    bri = int(q.get("bri", [255])[0])
+    bri = _clamp(q.get("bri", [255])[0], 0, 255)
     return panel if bri >= 255 else panel.dimmed(bri)
+
+
+def _clamp(value, lo, hi):
+    """Query params are ints from a text box; keep them inside what the
+    renderer can sensibly do (a scale of 10000 is a gigabyte of PNG)."""
+    return max(lo, min(hi, int(value)))
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
@@ -223,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                     "sgv": r.sgv, "trend": r.trend, "delta": r.delta,
                     "minutes_ago": r.minutes_ago, "time": r.time}).encode())
             elif url.path == "/png":
-                scale = int(q.get("scale", [14])[0])
+                scale = _clamp(q.get("scale", [14])[0], 1, 40)
                 self._send(200, "image/png", R.png_leds(panel_for(q), scale=scale))
             elif url.path == "/raw.png":
                 self._send(200, "image/png", R.png_raw(panel_for(q)))
