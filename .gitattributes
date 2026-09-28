@@ -1,0 +1,6 @@
+# Everything text is LF, on every platform. The deployed copy runs on Linux from
+# a bind mount, and a Windows checkout with core.autocrlf=true once wrote CRLF
+# into compose.yaml and every .py on the NAS share (46 CR bytes in the compose
+# file alone). This makes the working tree LF regardless of the global setting.
+* text=auto eol=lf
+*.png binary

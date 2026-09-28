@@ -23,8 +23,14 @@ python daemon.py --once          # one poll, render, push
 python daemon.py --poll 60       # run continuously
 python emu.py                    # face emulator at http://localhost:8431/
 python audit.py                  # check every face in every state
+python make_golden.py --check    # every frame byte-identical to golden/
+python -m unittest discover -s tests   # model, config, device, source parsers
 python make_mockups.py           # PNG sheets + gallery into mockups/
 ```
+
+The three checks above are the gate for any change: `audit.py` and `make_golden.py
+--check` for the pixels, the unit tests for the rules and the network edges the
+pixels cannot show (thresholds, delta, staleness, config layering, reply handling).
 
 Credentials are never stored here. `config.py` reads them from
 `clock-standard-config.json` (the file the TC001 clocks already use, kept

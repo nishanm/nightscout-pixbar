@@ -36,9 +36,22 @@ from model import Reading
 FATAL_BACKOFF_MIN = 300
 FATAL_BACKOFF_MAX = 1800
 
+# Touched at the end of every cycle; the container's healthcheck reads its age.
+# A loop that is alive but wedged (a socket that never times out, a hang in
+# the source) would otherwise look exactly like a healthy one from outside.
+HEARTBEAT = "/tmp/pixbar-heartbeat"
+
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def heartbeat():
+    try:
+        with open(HEARTBEAT, "w") as fh:
+            fh.write(str(int(time.time())))
+    except OSError:
+        pass  # not a container, or /tmp is read-only: the check just does not exist
 
 
 def face_for(configured, reading):
@@ -148,6 +161,7 @@ def main():
         except Exception:  # noqa: BLE001 - a daemon that dies leaves a live-looking number up
             log("cycle crashed; continuing:\n" + traceback.format_exc().rstrip())
             fatal = False
+        heartbeat()
         if args.once:
             return 0
         # The panel is re-rendered EVERY period so a reading keeps ageing into
