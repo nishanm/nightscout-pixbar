@@ -50,7 +50,8 @@ _SLOPE = {
 
 def trend_mark(panel, x, y, trend, color, w=9, h=15):
     """Up/down: stacked chevrons on a stem. Flat: a bar with a head. 45s: a
-    diagonal. Doubles get two chevrons. NONE: a question mark that fits the box."""
+    compact diagonal arrow. Doubles get two chevrons. NONE: a question mark
+    that fits the box."""
     if trend == "NONE":
         # Largest glyph that fits the height given; below every Spleen size
         # (the clock face offers 6 rows) the 3x5 font is the honest fallback.
@@ -69,27 +70,26 @@ def trend_mark(panel, x, y, trend, color, w=9, h=15):
             panel.rect(x + w - 3 + i, mid - 2 + i, 1, 5 - 2 * i, color)
         return
     if abs(slope) == 1:
-        # 2x2 blocks along the diagonal: the last block reaches column x + span
-        # and row y + span, so the run is one shorter than the box in BOTH axes
-        # or it spills (the 6-row clock box lost a corner; the hero face put a
-        # block in column 51).
-        span = min(w - 1, h - 1)
-        for i in range(span):
-            yy = y + (h - 2 - i) if slope > 0 else y + i
+        # A compact arrow, not a bracket that fills the box: a 2x2-block
+        # diagonal shaft ending at the tip, and a thin L-shaped head. Sized to
+        # the shorter side of the box and centred vertically, because a
+        # 45-degree line cannot fill a box taller than it is wide. The earlier
+        # version bridged that gap with a 6 px bar and a long stroke, and on
+        # the panel "107" with a rising mark read as "1077" (owner's photo,
+        # 2026-09-29). Straight up/down and flat marks still fill the height.
+        size = min(w, h)
+        y0 = y + (h - size) // 2
+        up = slope > 0
+        for i in range(size - 1):
+            yy = (y0 + size - 2 - i) if up else (y0 + i)
             panel.rect(x + i, yy, 2, 2, color)
-        head_y = y if slope > 0 else y + h - 2
-        panel.rect(x + w - 6, head_y, 6, 2, color)
-        # The stroke always starts at the box edge, same as the cap, but its
-        # length used to be a fixed 6px - fine when span reaches h - 1, but a
-        # box far taller than wide (hero-delta's 7x15) caps span at w - 1,
-        # stranding a fixed-length stroke rows short of the last block it's
-        # meant to meet (face_hero_delta/rising-45 in the photo). Stretch it
-        # to always reach, instead of leaving a floating, disconnected head.
-        last_yy = y + (h - 1 - span) if slope > 0 else y + span - 1
-        reach = abs(last_yy - head_y) + 2
-        stroke_len = max(6, reach)
-        stroke_y = head_y if slope > 0 else head_y - stroke_len + 2
-        panel.rect(x + w - 2, stroke_y, 2, stroke_len, color)
+        head = max(3, size // 2 + 1)
+        if up:
+            panel.rect(x + size - head, y0, head, 1, color)
+            panel.rect(x + size - 1, y0, 1, head, color)
+        else:
+            panel.rect(x + size - head, y0 + size - 1, head, 1, color)
+            panel.rect(x + size - 1, y0 + size - head, 1, head, color)
         return
     count = 2 if trend in ("DOUBLE_UP", "DOUBLE_DOWN") else 1
     stem = x + w // 2 - 1
