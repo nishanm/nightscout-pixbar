@@ -7,6 +7,11 @@
 #
 # Every host path below is relative to this file, so the deploy directory can be
 # anywhere and nothing here names a machine.
+#
+# The project is named here rather than taken from the folder: the working copy
+# lives in pixbar/native beside the firmware in pixbar/stipple, and a project
+# called "native" would not recognise the running `pixbar` container as its own.
+name: pixbar
 services:
   pixbar:
     image: python:3.12-alpine
