@@ -48,8 +48,8 @@
    "file": "hero--in-range.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "8596672846c854e4f049ccdfb5dedd7c6188be262964875cfe6fafb91a97365b",
-   "lit_pixels": 171,
+   "sha256_rgb888": "a3146ae6a64053eb718e58a8b6fb1ea1be44c2fbd8b0e16a96ac706f605c4314",
+   "lit_pixels": 174,
    "clipped": 0,
    "inputs": {
     "sgv": 118,
@@ -1504,8 +1504,8 @@
    "file": "hero-delta--in-range.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "0d9c40826eb8fee872106e4840038ab9ce19a69b0a8486e001cca7c9e7444ace",
-   "lit_pixels": 171,
+   "sha256_rgb888": "59f2be6d233bba549455528e9c820d7c48a4c720fdcfae7d484eb8e8e25abe2e",
+   "lit_pixels": 174,
    "clipped": 0,
    "inputs": {
     "sgv": 118,
@@ -4416,8 +4416,8 @@
    "file": "clock--in-range.png",
    "width": 52,
    "height": 16,
-   "sha256_rgb888": "e4d6a96f453f93917ee752c8aa26b3b137907261a62d78223eac63d0ab852c3d",
-   "lit_pixels": 180,
+   "sha256_rgb888": "585e262ef1132afba8a81f2f1d8b20906be25f9850c9319b23e1fdc451a8f0c9",
+   "lit_pixels": 183,
    "clipped": 0,
    "inputs": {
     "sgv": 118,

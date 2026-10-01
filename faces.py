@@ -65,9 +65,13 @@ def trend_mark(panel, x, y, trend, color, w=9, h=15):
     slope = _SLOPE.get(trend, 0)
     mid = y + h // 2
     if slope == 0:
-        panel.rect(x, mid - 1, w - 3, 2, color)          # shaft
-        for i in range(3):                                # head, 5 -> 1 tall
-            panel.rect(x + w - 3 + i, mid - 2 + i, 1, 5 - 2 * i, color)
+        panel.rect(x, mid - 1, w - 3, 2, color)          # shaft, rows mid-1..mid
+        # Head 6 -> 4 -> 2 tall, centred on the 2-row shaft, so the tip is the
+        # shaft carried on. The 5 -> 1 head it replaced centred on row `mid`
+        # alone: one row above the shaft, two below, a 1-px tip on its lower
+        # edge - it read as a bent arrow on the panel (owner, 2026-09-30).
+        for i in range(3):
+            panel.rect(x + w - 3 + i, mid - 3 + i, 1, 6 - 2 * i, color)
         return
     if abs(slope) == 1:
         # A compact arrow, not a bracket that fills the box: a 2x2-block
