@@ -13,8 +13,19 @@ same thing on both.
 
 ## State
 
-Working: real Dexcom readings render and reach the panel. Not yet a product —
-see **Known limits**.
+**Work in progress. Not done yet.**
+
+Working: Nightscout and Dexcom readings render and reach the panel, and this
+has run unattended as a container since 2026-09-27. Not yet a product — see
+**Known limits**.
+
+This repo is also the pixel reference for the native work: the golden corpus
+below is what the on-device glucose app has to reproduce byte for byte.
+
+- Native firmware on Stipple (in progress):
+  [nishanm/Stipple](https://github.com/nishanm/Stipple), branches `glucose`
+  and `ui-sources`.
+- A Berry app for the AWTRIX NG TC002 port is next (in progress, early).
 
 ## Quick start
 
